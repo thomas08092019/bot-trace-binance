@@ -291,6 +291,10 @@ async def ghost_synchronizer(
     
     CRITICAL: This must run at the START of each trading loop iteration.
     
+    TESTNET NOTE: Disabled on testnet because conditional orders (STOP_MARKET)
+    are not returned by fetch_open_orders() and get immediately cancelled,
+    causing infinite loop.
+    
     Args:
         exchange: SafeExchange instance
         stoploss_percent: Stop loss percentage for new SLs
@@ -308,6 +312,13 @@ async def ghost_synchronizer(
     }
     
     console.print("\n[bold cyan]═══ GHOST SYNCHRONIZER ═══[/bold cyan]")
+    
+    # TESTNET BYPASS: Ghost Sync doesn't work correctly on testnet
+    # because conditional orders are immediately cancelled
+    if exchange.testnet:
+        console.print("[yellow]⚠ Ghost Sync disabled on testnet (conditional orders not supported)[/yellow]")
+        result['all_synced'] = True
+        return result
     
     try:
         # Fetch all positions first

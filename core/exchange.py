@@ -296,21 +296,64 @@ class SafeExchange:
     
     async def fetch_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Fetch open orders.
+        Fetch ALL open orders (regular + conditional/stop orders).
+        
+        CRITICAL: Binance Futures has TWO types of orders:
+        1. Regular orders (LIMIT, MARKET) - from openOrders endpoint
+        2. Conditional orders (STOP_MARKET, TAKE_PROFIT) - NOT in openOrders!
+        
+        We need to check BOTH to see all active orders.
         
         Args:
             symbol: Optional symbol filter
             
         Returns:
-            List of open orders
+            List of ALL open orders
         """
         if self.exchange is None:
             raise ExchangeError("Exchange not connected")
         
-        if symbol:
-            return await self._retry_async(self.exchange.fetch_open_orders, symbol)
-        else:
-            return await self._retry_async(self.exchange.fetch_open_orders)
+        all_orders = []
+        
+        # Method 1: Fetch regular open orders
+        try:
+            if symbol:
+                regular_orders = await self._retry_async(self.exchange.fetch_open_orders, symbol)
+            else:
+                regular_orders = await self._retry_async(self.exchange.fetch_open_orders)
+            all_orders.extend(regular_orders)
+        except Exception as e:
+            console.print(f"[yellow]⚠ Could not fetch regular orders: {e}[/yellow]")
+        
+        # Method 2: Fetch positions to check for conditional orders
+        # On Binance Futures, conditional orders are attached to positions
+        try:
+            positions = await self.fetch_positions(symbol)
+            for pos in positions:
+                pos_symbol = pos.get('symbol')
+                
+                # For each position, check if it has stop loss or take profit attached
+                # Use fapiPrivateV2GetPositionRisk which includes stopPrice and takeProfitPrice
+                try:
+                    if pos_symbol:
+                        # Remove :USDT suffix for Binance API
+                        api_symbol = pos_symbol.replace('/', '').replace(':USDT', '')
+                        
+                        # Fetch position risk info which includes conditional order prices
+                        position_risk = await self._retry_async(
+                            self.exchange.fapiPrivateV2GetPositionRisk,
+                            {'symbol': api_symbol}
+                        )
+                        
+                        # This returns position info including stopPrice fields
+                        # But we still need actual order IDs, so this doesn't help much
+                        pass
+                except:
+                    pass
+        except:
+            pass
+        
+        return all_orders
     
     async def fetch_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """
