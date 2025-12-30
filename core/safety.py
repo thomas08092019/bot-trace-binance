@@ -172,14 +172,48 @@ async def fix_missing_stop_loss(
     console.print(f"[cyan]→ Placing missing stop loss for {symbol}: {sl_side} {pos_qty} @ {sl_price}[/cyan]")
     
     try:
-        await exchange.create_stop_market_order(
+        order = await exchange.create_stop_market_order(
             symbol=symbol,
             side=sl_side,
             amount=pos_qty,
             stop_price=sl_price
         )
-        console.print(f"[green]✓ Missing stop loss placed for {symbol}[/green]")
-        return True
+        order_id = order.get('id')
+        console.print(f"[green]✓ Stop loss created: {order_id}[/green]")
+        
+        # CRITICAL: Immediate verification - check if order was accepted
+        await asyncio.sleep(0.5)  # Brief delay for exchange processing
+        
+        try:
+            fresh_order = await exchange.fetch_order(order_id, symbol)
+            status = fresh_order.get('status', '').lower()
+            
+            if status in ('canceled', 'cancelled', 'expired', 'rejected'):
+                console.print(Panel(
+                    f"[bold red]STOP LOSS REJECTED BY EXCHANGE[/bold red]\n"
+                    f"Order ID: {order_id}\n"
+                    f"Status: {status.upper()}\n"
+                    f"Symbol: {symbol}\n"
+                    f"Side: {sl_side}\n"
+                    f"Quantity: {pos_qty}\n"
+                    f"Stop Price: {sl_price}\n\n"
+                    f"[yellow]Raw Exchange Response:[/yellow]\n"
+                    f"{fresh_order.get('info', 'N/A')}",
+                    title="🚨 SL ORDER FAILED",
+                    border_style="red"
+                ))
+                return False
+            elif status == 'open':
+                console.print(f"[green]✓ Stop loss verified: {order_id} (status: {status})[/green]")
+                return True
+            else:
+                console.print(f"[yellow]⚠ Stop loss status uncertain: {status}[/yellow]")
+                return True  # Assume OK if not explicitly failed
+                
+        except Exception as verify_error:
+            console.print(f"[yellow]⚠ Could not verify SL order (may still be OK): {verify_error}[/yellow]")
+            return True  # Order was placed, verification failed (not critical)
+            
     except Exception as e:
         console.print(f"[red]✗ Failed to place stop loss: {e}[/red]")
         return False
@@ -275,14 +309,24 @@ async def ghost_synchronizer(
     console.print("\n[bold cyan]═══ GHOST SYNCHRONIZER ═══[/bold cyan]")
     
     try:
-        # Fetch positions and orders
+        # Fetch all positions first
         positions = await exchange.fetch_positions()
-        open_orders = await exchange.fetch_open_orders(symbol)
         
         if not positions:
             console.print("[green]✓ No open positions - nothing to sync[/green]")
             result['all_synced'] = True
             return result
+        
+        # If symbol is specified, filter positions to that symbol only
+        if symbol:
+            positions = [p for p in positions if p.get('symbol') == symbol]
+            if not positions:
+                console.print(f"[green]✓ No positions for {symbol}[/green]")
+                result['all_synced'] = True
+                return result
+        
+        # Fetch open orders - use symbol filter if available to reduce rate limit impact
+        open_orders = await exchange.fetch_open_orders(symbol)
         
         console.print(f"[dim]Found {len(positions)} position(s), {len(open_orders)} open order(s)[/dim]")
         
@@ -322,6 +366,7 @@ async def ghost_synchronizer(
                 else:
                     result['errors'] += 1
                     all_synced = False
+                    console.print(f"[yellow]⚠ SL placement failed for {symbol} - will retry next cycle[/yellow]")
                     
             else:
                 # Check quantity match
