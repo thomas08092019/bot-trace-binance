@@ -185,15 +185,25 @@ def calculate_position_size(
     entry_price: Decimal,
     stoploss_price: Decimal,
     step_size: Decimal,
-    leverage: int = 1
+    leverage: int = 1,
+    max_position_percent: Decimal = Decimal("10.0")
 ) -> Decimal:
     """
     Calculate safe position size using floor rounding.
     
+    CRITICAL: Limits position size to prevent over-leveraging!
+    
     Formula:
         Distance = |entry_price - stoploss_price|
         RawQty = (Balance * Risk% * Leverage) / Distance
-        SafeQty = floor(RawQty / step_size) * step_size
+        
+        BUT limited by:
+        MaxMargin = Balance * MaxPosition%
+        MaxNotional = MaxMargin * Leverage
+        MaxQty = MaxNotional / Entry_Price
+        
+        FinalQty = MIN(RawQty, MaxQty)
+        SafeQty = floor(FinalQty / step_size) * step_size
     
     Args:
         balance: Available balance (USDT)
@@ -202,6 +212,7 @@ def calculate_position_size(
         stoploss_price: Stop loss price
         step_size: Symbol's step size
         leverage: Trading leverage
+        max_position_percent: Max % of balance to use as margin (default 10%)
         
     Returns:
         Safe quantity (floored to step size), or Decimal("0") if invalid
@@ -230,15 +241,35 @@ def calculate_position_size(
         # Calculate risk amount in USDT
         risk_amount = balance * (risk_percent / Decimal("100"))
         
-        # Calculate raw quantity
+        # Calculate raw quantity based on risk
         # With leverage, we can control more with the same margin
-        raw_qty = (risk_amount * Decimal(str(leverage))) / distance
+        raw_qty_risk = (risk_amount * Decimal(str(leverage))) / distance
+        
+        # CRITICAL: Apply position size limit to prevent over-leveraging
+        max_margin = balance * (max_position_percent / Decimal("100"))
+        max_notional = max_margin * Decimal(str(leverage))
+        max_qty_position = max_notional / entry_price
+        
+        # Take the MINIMUM of risk-based qty and position limit
+        if raw_qty_risk > max_qty_position:
+            console.print(f"[yellow]⚠ Position size limited by MAX_POSITION_PERCENT ({max_position_percent}%)[/yellow]")
+            console.print(f"[yellow]  Risk-based qty: {raw_qty_risk:.2f}, Limited to: {max_qty_position:.2f}[/yellow]")
+            raw_qty = max_qty_position
+        else:
+            raw_qty = raw_qty_risk
         
         # CRITICAL: Floor to step size (NEVER round)
         safe_qty = floor_to_step(raw_qty, step_size)
         
+        # Calculate actual margin and notional for logging
+        actual_notional = safe_qty * entry_price
+        actual_margin = actual_notional / Decimal(str(leverage))
+        margin_percent = (actual_margin / balance) * Decimal("100")
+        
         console.print(f"[dim]Calculator: balance={balance}, risk={risk_percent}%, "
                      f"distance={distance}, raw_qty={raw_qty}, safe_qty={safe_qty}[/dim]")
+        console.print(f"[cyan]Position: notional={actual_notional:.2f} USDT, "
+                     f"margin={actual_margin:.2f} USDT ({margin_percent:.1f}% of balance)[/cyan]")
         
         return safe_qty
         
@@ -280,7 +311,8 @@ def calculate_safe_quantity(
     stoploss_price: Decimal,
     exchange_info: Dict[str, Any],
     symbol: str,
-    leverage: int = 1
+    leverage: int = 1,
+    max_position_percent: Decimal = Decimal("10.0")
 ) -> Decimal:
     """
     Complete safe quantity calculation with all validations.
@@ -295,6 +327,7 @@ def calculate_safe_quantity(
         exchange_info: CCXT market info
         symbol: Trading symbol
         leverage: Trading leverage
+        max_position_percent: Max % of balance to use as margin
         
     Returns:
         Safe quantity, or Decimal("0") if any validation fails
@@ -311,7 +344,8 @@ def calculate_safe_quantity(
             entry_price=entry_price,
             stoploss_price=stoploss_price,
             step_size=step_size,
-            leverage=leverage
+            leverage=leverage,
+            max_position_percent=max_position_percent
         )
         
         if safe_qty == 0:

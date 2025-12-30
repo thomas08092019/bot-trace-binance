@@ -54,12 +54,15 @@ def get_position_side(position: Dict[str, Any]) -> str:
     Returns:
         'LONG' or 'SHORT'
     """
-    contracts = float(position.get('contracts', 0))
-    side = position.get('side', '')
+    # Binance Futures returns 'side' field directly
+    side = position.get('side', '').upper()
     
-    if side.lower() == 'long' or contracts > 0:
-        return 'LONG'
-    return 'SHORT'
+    # Fallback to contracts check if side not available
+    if not side:
+        contracts = float(position.get('contracts', 0))
+        return 'LONG' if contracts > 0 else 'SHORT'
+    
+    return side
 
 
 def get_position_qty(position: Dict[str, Any]) -> Decimal:

@@ -87,6 +87,10 @@ def load_config() -> dict:
         'risk_percent': float(os.getenv('RISK_PERCENT', '1.0')),
         'leverage': int(os.getenv('LEVERAGE', '10')),
         'stoploss_percent': float(os.getenv('STOPLOSS_PERCENT', '2.0')),
+        'max_position_percent': float(os.getenv('MAX_POSITION_PERCENT', '10.0')),
+        'max_concurrent_positions': int(os.getenv('MAX_CONCURRENT_POSITIONS', '5')),
+        'base_symbol_limit': int(os.getenv('BASE_SYMBOL_LIMIT', '15')),
+        'max_symbol_limit': int(os.getenv('MAX_SYMBOL_LIMIT', '50')),
         'testnet': os.getenv('TESTNET', 'false').lower() == 'true',
         'symbol': os.getenv('SYMBOL', 'BTC/USDT'),
         'scan_interval': int(os.getenv('SCAN_INTERVAL', '60')),  # seconds
@@ -134,10 +138,25 @@ async def trading_loop(
     risk_percent = Decimal(str(config['risk_percent']))
     leverage = config['leverage']
     stoploss_percent = Decimal(str(config['stoploss_percent']))
+    max_position_percent = Decimal(str(config['max_position_percent']))
+    max_concurrent_positions = config['max_concurrent_positions']
+    base_symbol_limit = config['base_symbol_limit']
+    max_symbol_limit = config['max_symbol_limit']
     takeprofit_percent = Decimal(str(config['takeprofit_percent']))
     trailing_activation = Decimal(str(config['trailing_activation_percent']))
     trailing_callback = Decimal(str(config['trailing_callback_percent']))
     scan_interval = config['scan_interval']
+    
+    # Calculate per-position margin limit
+    per_position_percent = max_position_percent / Decimal(str(max_concurrent_positions))
+    
+    console.print(f"[cyan]Portfolio Settings:[/cyan]")
+    console.print(f"  Max Concurrent Positions: {max_concurrent_positions}")
+    console.print(f"  Total Margin Pool: {max_position_percent}%")
+    console.print(f"  Per-Position Limit: {per_position_percent}%")
+    console.print(f"[cyan]Scanner Settings:[/cyan]")
+    console.print(f"  Base Symbols: {base_symbol_limit}")
+    console.print(f"  Max Symbols: {max_symbol_limit} (progressive)")
     
     # Initialize Position Manager for trailing stops
     position_manager = None
@@ -152,6 +171,7 @@ async def trading_loop(
     
     iteration = 0
     symbols = []  # Will be fetched dynamically
+    base_symbol_limit = 15  # Default scan size
     
     while not shutdown_requested:
         iteration += 1
@@ -164,7 +184,7 @@ async def trading_loop(
         try:
             # ====== STEP 0: UPDATE SYMBOL WATCHLIST (Every iteration for real-time volume) ======
             console.print("[dim]Updating symbol watchlist...[/dim]")
-            symbols = await fetch_top_symbols(exchange, limit=15)
+            symbols = await fetch_top_symbols(exchange, limit=base_symbol_limit)
             if not symbols:
                 console.print("[yellow]⚠ No symbols available - using fallback[/yellow]")
                 symbols = get_default_symbols()
@@ -182,6 +202,17 @@ async def trading_loop(
             summaries = await get_position_summary(exchange, None)
             display_position_summary(summaries)
             
+            # Extract active symbols to avoid duplicates
+            active_symbols = set()
+            if summaries:
+                for summary in summaries:
+                    active_symbols.add(summary['symbol'])
+            
+            current_position_count = len(active_symbols)
+            available_slots = max_concurrent_positions - current_position_count
+            
+            console.print(f"[cyan]Portfolio Status: {current_position_count}/{max_concurrent_positions} positions[/cyan]")
+            
             # ====== STEP 3: PROCESS TRAILING STOPS IF POSITION EXISTS ======
             if summaries and position_manager:
                 console.print("\n[bold]Processing Trailing Stops...[/bold]")
@@ -198,115 +229,163 @@ async def trading_loop(
                 
                 # Display tracker status
                 position_manager.display_tracker_status()
-                
-                # Shorter interval when managing positions
+            
+            # ====== STEP 4: CHECK IF WE CAN OPEN NEW POSITIONS ======
+            if available_slots <= 0:
+                console.print("[dim]Portfolio full - waiting for positions to close...[/dim]")
                 await asyncio.sleep(min(scan_interval, 10))
                 continue
             
-            # ====== STEP 4: CHECK IF WE CAN OPEN NEW POSITIONS ======
-            if summaries:
-                console.print("[dim]Already have open position(s) - waiting for exit...[/dim]")
-                await asyncio.sleep(scan_interval)
-                continue
+            # ====== STEP 5: SCAN FOR SIGNALS WITH PROGRESSIVE EXPANSION ======
+            console.print(f"[cyan]Scanning for signals to fill {available_slots} slot(s)...[/cyan]")
             
-            # ====== STEP 5: SCAN FOR SIGNALS ======
-            signals = await scan_market(
-                exchange=exchange,
-                symbols=symbols,
-                stoploss_percent=stoploss_percent,
-                max_signals=3
-            )
+            # Progressive scanning: base_symbol_limit → max_symbol_limit
+            # Calculate intermediate steps
+            step_size = 5
+            scan_limits = list(range(base_symbol_limit, max_symbol_limit + 1, step_size))
+            if scan_limits[-1] != max_symbol_limit:
+                scan_limits.append(max_symbol_limit)
             
-            if not signals:
-                console.print("[dim]No signals found - waiting for next scan...[/dim]")
-                await asyncio.sleep(scan_interval)
-                continue
+            filtered_signals = []
+            scan_limit = base_symbol_limit
             
-            # ====== STEP 6: ATTEMPT ENTRY ON BEST SIGNAL ======
-            best_signal = signals[0]
-            
-            # Calculate take profit price if enabled
-            tp_price = None
-            if takeprofit_percent > 0:
-                if best_signal.direction == 'LONG':
-                    tp_price = best_signal.entry_price * (Decimal("1") + takeprofit_percent / Decimal("100"))
+            for scan_limit in scan_limits:
+                # Skip if already scanned this limit or higher
+                if len(symbols) >= scan_limit:
+                    pass  # Already have enough symbols
                 else:
-                    tp_price = best_signal.entry_price * (Decimal("1") - takeprofit_percent / Decimal("100"))
-            
-            tp_info = f"\nTake Profit: {tp_price}" if tp_price else ""
-            trailing_info = f"\nTrailing: Activation={trailing_activation}%, Callback={trailing_callback}%" if trailing_activation > 0 else ""
-            
-            console.print(Panel(
-                f"[bold green]SIGNAL DETECTED[/bold green]\n"
-                f"Symbol: {best_signal.symbol}\n"
-                f"Direction: {best_signal.direction}\n"
-                f"Entry: {best_signal.entry_price}\n"
-                f"Stop Loss: {best_signal.stoploss_price}{tp_info}{trailing_info}\n"
-                f"Reason: {best_signal.reason}",
-                title="📈 TRADE OPPORTUNITY",
-                border_style="green"
-            ))
-            
-            # Get balance
-            balance_info = await exchange.fetch_balance()
-            usdt_balance = Decimal(str(balance_info.get('USDT', {}).get('free', 0)))
-            
-            if usdt_balance <= 0:
-                console.print("[red]✗ Insufficient balance[/red]")
-                await asyncio.sleep(scan_interval)
-                continue
-            
-            # Calculate position size
-            market_info = exchange.get_market_info(best_signal.symbol)
-            
-            quantity = calculate_safe_quantity(
-                balance=usdt_balance,
-                risk_percent=risk_percent,
-                entry_price=best_signal.entry_price,
-                stoploss_price=best_signal.stoploss_price,
-                exchange_info=market_info,
-                symbol=best_signal.symbol,
-                leverage=leverage
-            )
-            
-            if quantity == 0:
-                console.print("[yellow]⚠ Calculated quantity is 0 - skipping trade[/yellow]")
-                await asyncio.sleep(scan_interval)
-                continue
-            
-            # Execute atomic entry
-            side = 'buy' if best_signal.direction == 'LONG' else 'sell'
-            
-            try:
-                result = await execute_atomic_entry(
+                    console.print(f"[dim]Expanding scan to top {scan_limit} symbols...[/dim]")
+                    symbols = await fetch_top_symbols(exchange, limit=scan_limit)
+                
+                signals = await scan_market(
                     exchange=exchange,
-                    symbol=best_signal.symbol,
-                    side=side,
-                    quantity=quantity,
-                    stoploss_price=best_signal.stoploss_price,
-                    takeprofit_price=tp_price  # Optional TP
+                    symbols=symbols,
+                    stoploss_percent=stoploss_percent,
+                    max_signals=available_slots + 10  # Scan extra in case some fail
                 )
                 
-                if result['success']:
-                    tp_order_info = ""
-                    if result.get('take_profit_order'):
-                        tp_order_info = f"\nTake Profit: {result['take_profit_order']['id']}"
+                if not signals:
+                    continue
+                
+                # Filter out symbols already in portfolio
+                filtered_signals = [s for s in signals if s.symbol not in active_symbols]
+                
+                # If we found enough unique signals, stop scanning
+                if len(filtered_signals) >= available_slots:
+                    console.print(f"[green]✓ Found {len(filtered_signals)} unique signals at {scan_limit} symbols[/green]")
+                    break
+                
+                # If this is the last limit (50), accept what we have
+                if scan_limit == 50:
+                    if filtered_signals:
+                        console.print(f"[yellow]⚠ Found only {len(filtered_signals)}/{available_slots} signals at max scan (50)[/yellow]")
+                    break
+            
+            if not filtered_signals:
+                console.print("[yellow]⚠ No unique signals found after progressive scan - skipping[/yellow]")
+                await asyncio.sleep(scan_interval)
+                continue
+            
+            # Take only the number of slots available
+            signals_to_enter = filtered_signals[:available_slots]
+            
+            console.print(f"[green]Entering {len(signals_to_enter)} position(s)[/green]")
+            
+            # ====== STEP 6: ATTEMPT ENTRY ON SIGNALS ======
+            for signal in signals_to_enter:
+                # Calculate take profit price if enabled
+                tp_price = None
+                if takeprofit_percent > 0:
+                    if signal.direction == 'LONG':
+                        tp_price = signal.entry_price * (Decimal("1") + takeprofit_percent / Decimal("100"))
+                    else:
+                        tp_price = signal.entry_price * (Decimal("1") - takeprofit_percent / Decimal("100"))
+                
+                tp_info = f"\nTake Profit: {tp_price}" if tp_price else ""
+                trailing_info = f"\nTrailing: Activation={trailing_activation}%, Callback={trailing_callback}%" if trailing_activation > 0 else ""
+                
+                console.print(Panel(
+                    f"[bold green]SIGNAL DETECTED[/bold green]\n"
+                    f"Symbol: {signal.symbol}\n"
+                    f"Direction: {signal.direction}\n"
+                    f"Entry: {signal.entry_price}\n"
+                    f"Stop Loss: {signal.stoploss_price}{tp_info}{trailing_info}\n"
+                    f"Reason: {signal.reason}",
+                    title="📈 TRADE OPPORTUNITY",
+                    border_style="green"
+                ))
+                
+                # Validate entry price (skip if 0 or invalid)
+                if signal.entry_price <= 0:
+                    console.print(f"[red]✗ Invalid entry price ({signal.entry_price}) for {signal.symbol} - skipping[/red]")
+                    continue
+                
+                # Get balance
+                balance_info = await exchange.fetch_balance()
+                usdt_balance = Decimal(str(balance_info.get('USDT', {}).get('free', 0)))
+                
+                if usdt_balance <= 0:
+                    console.print("[red]✗ Insufficient balance - skipping remaining signals[/red]")
+                    break
+                
+                # Calculate position size with per-position limit
+                market_info = exchange.get_market_info(signal.symbol)
+                
+                quantity = calculate_safe_quantity(
+                    balance=usdt_balance,
+                    risk_percent=risk_percent,
+                    entry_price=signal.entry_price,
+                    stoploss_price=signal.stoploss_price,
+                    exchange_info=market_info,
+                    symbol=signal.symbol,
+                    leverage=leverage,
+                    max_position_percent=per_position_percent  # Use divided amount
+                )
+                
+                if quantity == 0:
+                    console.print(f"[yellow]⚠ Calculated quantity is 0 for {signal.symbol} - skipping[/yellow]")
+                    continue
+                
+                # Execute atomic entry
+                side = 'buy' if signal.direction == 'LONG' else 'sell'
+                
+                try:
+                    result = await execute_atomic_entry(
+                        exchange=exchange,
+                        symbol=signal.symbol,
+                        side=side,
+                        quantity=quantity,
+                        stoploss_price=signal.stoploss_price,
+                        takeprofit_price=tp_price  # Optional TP
+                    )
                     
-                    console.print(Panel(
-                        f"[bold green]TRADE EXECUTED[/bold green]\n"
-                        f"Entry: {result['entry_order']['id']}\n"
-                        f"Stop Loss: {result['stop_loss_order']['id']}{tp_order_info}\n"
-                        f"Executed: {result['executed_qty']} @ {result['average_price']}",
-                        title="✅ SUCCESS",
-                        border_style="green"
-                    ))
-                    
-            except SpreadTooWideError as e:
-                console.print(f"[yellow]⚠ Trade aborted: {e}[/yellow]")
-            except StaleDataError as e:
-                console.print(f"[red]✗ Stale data detected: {e}[/red]")
-            except ExchangeError as e:
-                console.print(f"[red]✗ Exchange error: {e}[/red]")
+                    if result['success']:
+                        tp_order_info = ""
+                        if result.get('take_profit_order'):
+                            tp_order_info = f"\nTake Profit: {result['take_profit_order']['id']}"
+                        
+                        console.print(Panel(
+                            f"[bold green]TRADE EXECUTED[/bold green]\n"
+                            f"Symbol: {signal.symbol}\n"
+                            f"Entry: {result['entry_order']['id']}\n"
+                            f"Stop Loss: {result['stop_loss_order']['id']}{tp_order_info}\n"
+                            f"Executed: {result['executed_qty']} @ {result['average_price']}",
+                            title="✅ SUCCESS",
+                            border_style="green"
+                        ))
+                        
+                        # Add to active symbols to prevent duplicate in same iteration
+                        active_symbols.add(signal.symbol)
+                        
+                except SpreadTooWideError as e:
+                    console.print(f"[yellow]⚠ Trade aborted for {signal.symbol}: {e}[/yellow]")
+                except StaleDataError as e:
+                    console.print(f"[red]✗ Stale data for {signal.symbol}: {e}[/red]")
+                except ExchangeError as e:
+                    console.print(f"[red]✗ Exchange error for {signal.symbol}: {e}[/red]")
+                
+                # Small delay between entries
+                await asyncio.sleep(1)
             
         except Exception as e:
             console.print(f"[red]✗ Unexpected error in trading loop: {e}[/red]")

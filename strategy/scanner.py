@@ -20,6 +20,7 @@ console = Console()
 
 # Load config from environment (with defaults)
 MIN_VOLUME_USDT = Decimal(os.getenv('MIN_VOLUME_USDT', '10000000'))
+MIN_PRICE_USDT = Decimal(os.getenv('MIN_PRICE_USDT', '0.1'))  # Avoid very low price tokens
 
 # Technical indicator settings
 RSI_PERIOD = int(os.getenv('RSI_PERIOD', '14'))
@@ -160,14 +161,24 @@ async def analyze_symbol(
         # Extract closes
         closes = [candle[4] for candle in ohlcv]
         
+        # Validate price data
+        current_price = Decimal(str(closes[-1]))
+        if current_price <= 0:
+            console.print(f"  [red]{symbol:8}[/red] │ Invalid price ({current_price}) - skipping")
+            return None
+        
+        # Skip very low price tokens (prone to testnet issues)
+        if current_price < MIN_PRICE_USDT:
+            coin_name = symbol.split('/')[0]
+            console.print(f"  [yellow]{coin_name:8}[/yellow] │ Price too low ({current_price} < {MIN_PRICE_USDT}) - skipping")
+            return None
+        
         # Calculate indicators
         rsi = calculate_rsi(closes)
         fast_ema = calculate_ema(closes, EMA_FAST_PERIOD)
         slow_ema = calculate_ema(closes, EMA_SLOW_PERIOD)
         
         crossover = detect_ema_crossover(fast_ema, slow_ema)
-        
-        current_price = Decimal(str(closes[-1]))
         
         # Get EMA position for logging
         ema_position = "BULLISH" if fast_ema[-1] > slow_ema[-1] else "BEARISH"
