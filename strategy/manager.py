@@ -3,6 +3,7 @@ strategy/manager.py - Position Manager with Trailing Stop
 
 Implements:
 - Trailing stop logic with activation threshold
+- Take profit timeout (force close if TP reached but not filled)
 - Safe stop loss movement (always uses Ghost Synchronizer pattern)
 - Highest price tracking per position
 - CRITICAL: All operations use SafeExchange wrapper
@@ -12,6 +13,7 @@ import asyncio
 from decimal import Decimal
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from rich.console import Console
 from rich.panel import Panel
@@ -32,7 +34,7 @@ console = Console()
 
 @dataclass
 class PositionTracker:
-    """Tracks position state for trailing stop."""
+    """Tracks position state for trailing stop and TP timeout."""
     symbol: str
     entry_price: Decimal
     highest_price: Decimal  # For LONG
@@ -40,6 +42,8 @@ class PositionTracker:
     is_long: bool
     trailing_activated: bool = False
     last_sl_price: Decimal = Decimal("0")
+    tp_reached_time: Optional[datetime] = None  # When TP level was first reached
+    tp_level: Decimal = Decimal("0")  # Take profit price level
 
 
 class PositionManager:
@@ -55,7 +59,8 @@ class PositionManager:
         exchange: SafeExchange,
         trailing_activation_percent: Decimal,
         trailing_callback_percent: Decimal,
-        stoploss_percent: Decimal
+        stoploss_percent: Decimal,
+        tp_timeout_seconds: int = 30
     ):
         """
         Initialize Position Manager.
@@ -65,11 +70,13 @@ class PositionManager:
             trailing_activation_percent: % profit to activate trailing (e.g., 1.5)
             trailing_callback_percent: % callback from high/low for trailing SL (e.g., 0.5)
             stoploss_percent: Initial stop loss percent
+            tp_timeout_seconds: Seconds to wait before force-closing at TP level
         """
         self.exchange = exchange
         self.trailing_activation = trailing_activation_percent / Decimal("100")
         self.trailing_callback = trailing_callback_percent / Decimal("100")
         self.stoploss_percent = stoploss_percent
+        self.tp_timeout_seconds = tp_timeout_seconds
         
         # Track positions by symbol
         self._trackers: Dict[str, PositionTracker] = {}
@@ -294,6 +301,110 @@ class PositionManager:
             
             return False
     
+    async def _check_tp_timeout(
+        self,
+        position: Dict[str, Any],
+        tracker: PositionTracker,
+        current_price: Decimal,
+        open_orders: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        Check if TP level reached and timeout exceeded.
+        
+        If price reaches TP level but order doesn't fill within timeout,
+        force close the position with market order.
+        
+        Args:
+            position: Position dictionary
+            tracker: PositionTracker instance
+            current_price: Current market price
+            open_orders: List of open orders
+            
+        Returns:
+            True if position was force closed
+        """
+        symbol = position.get('symbol')
+        pos_qty = get_position_qty(position)
+        is_long = tracker.is_long
+        
+        # Find take profit order
+        tp_order = None
+        for order in open_orders:
+            if order.get('symbol') == symbol and order.get('type') == 'TAKE_PROFIT_MARKET':
+                tp_order = order
+                tracker.tp_level = parse_decimal(order.get('stopPrice', 0))
+                break
+        
+        if not tp_order or tracker.tp_level == 0:
+            # No TP order found, reset timeout tracking
+            tracker.tp_reached_time = None
+            return False
+        
+        # Check if price has reached TP level
+        tp_reached = False
+        if is_long:
+            # LONG: TP is above current price, reached if current >= TP
+            tp_reached = current_price >= tracker.tp_level
+        else:
+            # SHORT: TP is below current price, reached if current <= TP
+            tp_reached = current_price <= tracker.tp_level
+        
+        # Handle TP reached state
+        if tp_reached:
+            # First time reaching TP level
+            if tracker.tp_reached_time is None:
+                tracker.tp_reached_time = datetime.now()
+                console.print(f"[yellow]⏰ {symbol}: TP level {tracker.tp_level} reached! Timeout started ({self.tp_timeout_seconds}s)[/yellow]")
+                return False
+            
+            # Check if timeout exceeded
+            elapsed = (datetime.now() - tracker.tp_reached_time).total_seconds()
+            if elapsed >= self.tp_timeout_seconds:
+                console.print(Panel(
+                    f"[bold yellow]TP TIMEOUT - FORCE CLOSING[/bold yellow]\n"
+                    f"Symbol: {symbol}\n"
+                    f"TP Level: {tracker.tp_level}\n"
+                    f"Current Price: {current_price}\n"
+                    f"Waited: {elapsed:.1f}s (timeout: {self.tp_timeout_seconds}s)\n"
+                    f"Reason: TP reached but order not filled",
+                    title="⏱ TP TIMEOUT",
+                    border_style="yellow"
+                ))
+                
+                try:
+                    # Force close with market order
+                    close_side = 'sell' if is_long else 'buy'
+                    order = await self.exchange.create_market_order(
+                        symbol=symbol,
+                        side=close_side,
+                        amount=pos_qty
+                    )
+                    console.print(f"[green]✓ Position force closed at market price: {order['id']}[/green]")
+                    
+                    # Cancel TP order to avoid duplicate fills
+                    try:
+                        await self.exchange.cancel_order(tp_order['id'], symbol)
+                        console.print(f"[yellow]✓ Cancelled TP order: {tp_order['id']}[/yellow]")
+                    except Exception as e:
+                        console.print(f"[yellow]⚠ Could not cancel TP order: {e}[/yellow]")
+                    
+                    return True
+                    
+                except Exception as e:
+                    console.print(f"[red]✗ Failed to force close {symbol}: {e}[/red]")
+                    return False
+            else:
+                # Still waiting for timeout
+                remaining = self.tp_timeout_seconds - elapsed
+                console.print(f"[yellow]⏰ {symbol}: TP timeout in {remaining:.1f}s (price @ {current_price}, TP @ {tracker.tp_level})[/yellow]")
+                return False
+        else:
+            # Price moved away from TP level, reset timeout
+            if tracker.tp_reached_time is not None:
+                console.print(f"[dim]{symbol}: Price moved away from TP level ({current_price} vs {tracker.tp_level}), timeout reset[/dim]")
+                tracker.tp_reached_time = None
+            return False
+    
     async def process_trailing_stops(
         self,
         positions: List[Dict[str, Any]],
@@ -315,6 +426,7 @@ class PositionManager:
             'positions_processed': 0,
             'trailing_activated': 0,
             'stops_moved': 0,
+            'tp_timeouts': 0,
             'errors': 0
         }
         
@@ -351,6 +463,11 @@ class PositionManager:
                 
                 # Update price extremes
                 self._update_price_extremes(tracker, current_price)
+                
+                # Check TP timeout (force close if TP reached but not filled)
+                if await self._check_tp_timeout(position, tracker, current_price, open_orders):
+                    result['tp_timeouts'] += 1
+                    continue  # Position closed, skip trailing stop processing
                 
                 # Check if trailing should be activated
                 if not self._check_trailing_activation(tracker, current_price):
@@ -404,11 +521,12 @@ class PositionManager:
                 result['errors'] += 1
         
         # Summary
-        if result['stops_moved'] > 0 or result['trailing_activated'] > 0:
+        if result['stops_moved'] > 0 or result['trailing_activated'] > 0 or result['tp_timeouts'] > 0:
             console.print(Panel(
                 f"Positions: {result['positions_processed']}\n"
                 f"Trailing Activated: {result['trailing_activated']}\n"
                 f"Stops Moved: {result['stops_moved']}\n"
+                f"TP Timeouts: {result['tp_timeouts']}\n"
                 f"Errors: {result['errors']}",
                 title="📊 TRAILING SUMMARY",
                 border_style="cyan"

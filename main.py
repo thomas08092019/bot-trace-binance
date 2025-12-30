@@ -34,6 +34,7 @@ from core.exchange import create_exchange, SafeExchange, StaleDataError, Exchang
 from core.calculator import calculate_safe_quantity, parse_decimal
 from core.execution import execute_atomic_entry, SpreadTooWideError
 from core.safety import ghost_synchronizer, get_position_summary, display_position_summary
+from core.risk_manager import DynamicRiskManager
 from strategy.scanner import scan_market, get_default_symbols, fetch_top_symbols
 from strategy.manager import PositionManager
 
@@ -100,6 +101,8 @@ def load_config() -> dict:
         'testnet': os.getenv('TESTNET', 'false').lower() == 'true',
         'symbol': os.getenv('SYMBOL', 'BTC/USDT'),
         'scan_interval': int(os.getenv('SCAN_INTERVAL', '60')),  # seconds
+        'tp_timeout_seconds': int(os.getenv('TP_TIMEOUT_SECONDS', '30')),
+        'enable_dynamic_risk': os.getenv('ENABLE_DYNAMIC_RISK', 'false').lower() == 'true',
         # Take Profit settings (0 = disabled)
         'takeprofit_percent': float(os.getenv('TAKEPROFIT_PERCENT', '0')),
         # Trailing Stop settings (0 = disabled)
@@ -163,20 +166,31 @@ async def trading_loop(
     console.print(f"  Per-Position Limit: {per_position_percent}%")
     console.print(f"  Margin Mode: {margin_mode.upper()}")
     console.print(f"  Leverage: {leverage}x")
+    console.print(f"  TP Timeout: {config['tp_timeout_seconds']}s (force close if TP reached but not filled)")
+    console.print(f"  Dynamic Risk: {'ENABLED' if config['enable_dynamic_risk'] else 'DISABLED'}")
     console.print(f"[cyan]Scanner Settings:[/cyan]")
     console.print(f"  Base Symbols: {base_symbol_limit}")
     console.print(f"  Max Symbols: {max_symbol_limit} (progressive)")
     
-    # Initialize Position Manager for trailing stops
+    # Initialize Position Manager for trailing stops and TP timeout
     position_manager = None
     if trailing_activation > 0:
         position_manager = PositionManager(
             exchange=exchange,
             trailing_activation_percent=trailing_activation,
             trailing_callback_percent=trailing_callback,
-            stoploss_percent=stoploss_percent
+            stoploss_percent=stoploss_percent,
+            tp_timeout_seconds=config['tp_timeout_seconds']
         )
         console.print(f"[green]✓ Trailing Stop enabled: Activation={trailing_activation}%, Callback={trailing_callback}%[/green]")
+    
+    # Initialize Dynamic Risk Manager
+    risk_manager = DynamicRiskManager(
+        base_leverage=leverage,
+        min_leverage=int(os.getenv('MIN_LEVERAGE', '3')),
+        max_leverage=int(os.getenv('MAX_LEVERAGE', '20')),
+        enabled=config['enable_dynamic_risk']
+    )
     
     iteration = 0
     symbols = []  # Will be fetched dynamically
