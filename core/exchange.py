@@ -20,7 +20,8 @@ from rich.console import Console
 console = Console()
 
 # Stale data threshold in milliseconds
-STALE_DATA_THRESHOLD_MS = 3000
+# Testnet có latency cao hơn, nên dùng threshold cao hơn
+STALE_DATA_THRESHOLD_MS = 10000  # 10 seconds (mainnet nên dùng 3000)
 
 # Retry configuration
 MAX_RETRIES = 5
@@ -96,11 +97,30 @@ class SafeExchange:
             }
         }
         
+        # Testnet không hỗ trợ sapi endpoints (fetch_currencies)
+        # Phải disable trước khi init exchange
+        if self.testnet:
+            config['options'] = config.get('options', {})
+            config['options']['fetchCurrencies'] = False
+            # Suppress warning khi fetch all open orders (cần thiết cho Ghost Synchronizer)
+            config['options']['warnOnFetchOpenOrdersWithoutSymbol'] = False
+        
         self.exchange = ccxt.binanceusdm(config)
         
         if self.testnet:
-            self.exchange.set_sandbox_mode(True)
-            console.print("[yellow]⚠ TESTNET MODE ENABLED[/yellow]")
+            # KHÔNG DÙNG set_sandbox_mode(True) NỮA - Binance đã thay đổi cơ chế
+            # Thủ công set URL cho Testnet Futures (bao gồm tất cả API versions)
+            self.exchange.urls['api'] = {
+                'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
+                'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1',
+                'fapiPublicV2': 'https://testnet.binancefuture.com/fapi/v2',
+                'fapiPrivateV2': 'https://testnet.binancefuture.com/fapi/v2',
+                'fapiPublicV3': 'https://testnet.binancefuture.com/fapi/v3',
+                'fapiPrivateV3': 'https://testnet.binancefuture.com/fapi/v3',
+                'public': 'https://testnet.binancefuture.com/fapi/v1',
+                'private': 'https://testnet.binancefuture.com/fapi/v1',
+            }
+            console.print("[yellow]⚠ TESTNET MODE ENABLED (Manual URL Override)[/yellow]")
         
         # Load markets
         await self._load_markets()
@@ -332,6 +352,47 @@ class SafeExchange:
         console.print(f"[green]✓ Order created: {order['id']}[/green]")
         return order
     
+    async def create_limit_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        price: float,
+        params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a limit order.
+        
+        Args:
+            symbol: Trading symbol
+            side: 'buy' or 'sell'
+            amount: Order amount
+            price: Limit price
+            params: Additional parameters
+            
+        Returns:
+            Order result
+        """
+        if self.exchange is None:
+            raise ExchangeError("Exchange not connected")
+        
+        if params is None:
+            params = {}
+        
+        # CRITICAL: Add UUID for idempotency
+        params['newClientOrderId'] = self._generate_client_order_id()
+        
+        console.print(f"[cyan]→ Creating limit {side} order: {amount} {symbol} @ {price}[/cyan]")
+        console.print(f"[dim]  Client Order ID: {params['newClientOrderId']}[/dim]")
+        
+        order = await self._retry_async(
+            self.exchange.create_order,
+            symbol, 'limit', side, amount, price, params
+        )
+        
+        console.print(f"[green]✓ Limit order created: {order['id']}[/green]")
+        return order
+    
     async def create_stop_market_order(
         self,
         symbol: str,
@@ -374,6 +435,50 @@ class SafeExchange:
         )
         
         console.print(f"[green]✓ Stop order created: {order['id']}[/green]")
+        return order
+    
+    async def create_take_profit_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+        stop_price: Decimal,
+        params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a take profit market order.
+        
+        Args:
+            symbol: Trading symbol
+            side: 'buy' or 'sell' (opposite of position)
+            amount: Order amount
+            stop_price: Take profit trigger price
+            params: Additional parameters
+            
+        Returns:
+            Order result
+        """
+        if self.exchange is None:
+            raise ExchangeError("Exchange not connected")
+        
+        if params is None:
+            params = {}
+        
+        # CRITICAL: Add UUID for idempotency
+        params['newClientOrderId'] = self._generate_client_order_id()
+        params['stopPrice'] = float(stop_price)
+        params['type'] = 'TAKE_PROFIT_MARKET'
+        params['reduceOnly'] = True  # Important: TP should only reduce position
+        
+        console.print(f"[cyan]→ Creating take profit order: {side} {amount} {symbol} @ {stop_price}[/cyan]")
+        console.print(f"[dim]  Client Order ID: {params['newClientOrderId']}[/dim]")
+        
+        order = await self._retry_async(
+            self.exchange.create_order,
+            symbol, 'TAKE_PROFIT_MARKET', side, float(amount), float(stop_price), params
+        )
+        
+        console.print(f"[green]✓ Take profit order created: {order['id']}[/green]")
         return order
     
     async def cancel_order(self, order_id: str, symbol: str) -> Dict[str, Any]:

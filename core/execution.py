@@ -4,6 +4,7 @@ core/execution.py - Atomic Order Execution
 Implements:
 - Spread Guard (abort if spread > 0.1%)
 - Atomic entry + stop loss sequence
+- Optional Take Profit order placement
 - Stop loss based on ACTUAL executedQty (not requested qty)
 - Emergency market close on failure
 """
@@ -32,6 +33,9 @@ MAX_SPREAD_RATIO = Decimal("0.001")
 
 # Maximum retries for stop loss placement
 MAX_SL_RETRIES = 5
+
+# Maximum retries for take profit placement
+MAX_TP_RETRIES = 3
 
 
 class ExecutionError(Exception):
@@ -64,8 +68,23 @@ async def check_spread(
     """
     ticker = await exchange.fetch_ticker(symbol)
     
-    bid = parse_decimal(ticker['bid'])
-    ask = parse_decimal(ticker['ask'])
+    bid_raw = ticker.get('bid')
+    ask_raw = ticker.get('ask')
+    last_raw = ticker.get('last')
+    
+    if bid_raw is None or ask_raw is None:
+        # Testnet fallback: use last price when bid/ask unavailable
+        if last_raw is None:
+            raise ExecutionError("No price data available")
+        console.print(f"[yellow]⚠ Bid/Ask unavailable (testnet), using last price[/yellow]")
+        bid = parse_decimal(last_raw)
+        ask = parse_decimal(last_raw)
+        spread_ratio = Decimal("0")
+        console.print(f"[green]✓ Spread check skipped (testnet mode)[/green]")
+        return bid, ask, spread_ratio
+    
+    bid = parse_decimal(bid_raw)
+    ask = parse_decimal(ask_raw)
     
     if bid <= 0 or ask <= 0:
         raise ExecutionError(f"Invalid bid/ask: {bid}/{ask}")
@@ -82,7 +101,6 @@ async def check_spread(
     
     console.print(f"[green]✓ Spread OK: {spread_percent:.4f}%[/green]")
     return bid, ask, spread_ratio
-
 
 async def emergency_close_position(
     exchange: SafeExchange,
@@ -176,15 +194,69 @@ async def place_stop_loss(
     return None
 
 
+async def place_take_profit(
+    exchange: SafeExchange,
+    symbol: str,
+    executed_qty: Decimal,
+    take_profit_price: Decimal,
+    is_long: bool,
+    market_info: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """
+    Place take profit limit order for a position.
+    
+    CRITICAL: This uses the ACTUAL executed quantity, not requested.
+    
+    Args:
+        exchange: SafeExchange instance
+        symbol: Trading symbol
+        executed_qty: ACTUAL executed quantity from entry order
+        take_profit_price: Take profit limit price
+        is_long: True if long position
+        market_info: Market information
+        
+    Returns:
+        Take profit order result, or None if failed
+    """
+    # Take profit side is opposite of position (same as SL)
+    tp_side = 'sell' if is_long else 'buy'
+    
+    # Floor the take profit price to tick size
+    tick_size = get_tick_size(market_info, symbol)
+    floored_tp_price = floor_price_to_tick(take_profit_price, tick_size)
+    
+    console.print(f"[cyan]→ Placing take profit: {tp_side} {executed_qty} @ {floored_tp_price}[/cyan]")
+    
+    for attempt in range(MAX_TP_RETRIES):
+        try:
+            # Use TAKE_PROFIT_MARKET order type for futures
+            tp_order = await exchange.create_take_profit_order(
+                symbol=symbol,
+                side=tp_side,
+                amount=executed_qty,
+                stop_price=floored_tp_price
+            )
+            console.print(f"[green]✓ Take profit placed: {tp_order['id']}[/green]")
+            return tp_order
+        except Exception as e:
+            console.print(f"[yellow]⚠ Take profit attempt {attempt + 1} failed: {e}[/yellow]")
+            await asyncio.sleep(0.5)
+    
+    # Take profit failure is NOT critical - position still protected by SL
+    console.print("[yellow]⚠ Could not place take profit - position still protected by stop loss[/yellow]")
+    return None
+
+
 async def execute_atomic_entry(
     exchange: SafeExchange,
     symbol: str,
     side: str,
     quantity: Decimal,
-    stoploss_price: Decimal
+    stoploss_price: Decimal,
+    takeprofit_price: Optional[Decimal] = None
 ) -> Dict[str, Any]:
     """
-    Execute atomic entry sequence: Market Order + Stop Loss.
+    Execute atomic entry sequence: Market Order + Stop Loss + Optional Take Profit.
     
     ATOMIC SEQUENCE:
     1. Check spread (abort if > 0.1%)
@@ -192,6 +264,7 @@ async def execute_atomic_entry(
     3. Verify executed quantity and average price
     4. Place stop loss based on ACTUAL executed qty
     5. If stop loss fails -> Emergency close position
+    6. (Optional) Place take profit order
     
     Args:
         exchange: SafeExchange instance
@@ -199,6 +272,7 @@ async def execute_atomic_entry(
         side: 'buy' (long) or 'sell' (short)
         quantity: Quantity to trade
         stoploss_price: Stop loss trigger price
+        takeprofit_price: Optional take profit price (None to disable)
         
     Returns:
         Dictionary with entry and stop loss order details
@@ -213,6 +287,7 @@ async def execute_atomic_entry(
         'side': side,
         'entry_order': None,
         'stop_loss_order': None,
+        'take_profit_order': None,
         'executed_qty': Decimal("0"),
         'average_price': Decimal("0"),
         'success': False
@@ -221,12 +296,14 @@ async def execute_atomic_entry(
     is_long = side.lower() == 'buy'
     market_info = exchange.get_market_info(symbol)
     
+    tp_info = f"\nTake Profit: {takeprofit_price}" if takeprofit_price else ""
+    
     console.print(Panel(
         f"[bold cyan]ATOMIC ENTRY SEQUENCE[/bold cyan]\n"
         f"Symbol: {symbol}\n"
         f"Side: {side.upper()}\n"
         f"Quantity: {quantity}\n"
-        f"Stop Loss: {stoploss_price}",
+        f"Stop Loss: {stoploss_price}{tp_info}",
         title="⚡ EXECUTION",
         border_style="cyan"
     ))
@@ -294,10 +371,29 @@ async def execute_atomic_entry(
     if sl_order:
         result['stop_loss_order'] = sl_order
         result['success'] = True
+        
+        # ====== STEP 5 (OPTIONAL): PLACE TAKE PROFIT ======
+        if takeprofit_price is not None and takeprofit_price > 0:
+            console.print("\n[bold]Step 5/5: Take Profit (Optional)[/bold]")
+            
+            tp_order = await place_take_profit(
+                exchange=exchange,
+                symbol=symbol,
+                executed_qty=executed_qty,
+                take_profit_price=takeprofit_price,
+                is_long=is_long,
+                market_info=market_info
+            )
+            
+            if tp_order:
+                result['take_profit_order'] = tp_order
+        
+        tp_info = f"\nTake Profit: {result['take_profit_order']['id']}" if result['take_profit_order'] else ""
+        
         console.print(Panel(
             f"[bold green]ATOMIC ENTRY COMPLETE[/bold green]\n"
             f"Entry: {entry_order['id']}\n"
-            f"Stop Loss: {sl_order['id']}\n"
+            f"Stop Loss: {sl_order['id']}{tp_info}\n"
             f"Executed: {executed_qty} @ {average_price}",
             title="✅ SUCCESS",
             border_style="green"

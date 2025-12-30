@@ -240,7 +240,8 @@ async def fix_qty_mismatch(
 
 async def ghost_synchronizer(
     exchange: SafeExchange,
-    stoploss_percent: Decimal = Decimal("2.0")
+    stoploss_percent: Decimal = Decimal("2.0"),
+    symbol: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Ghost Synchronizer - Main safety routine.
@@ -258,6 +259,7 @@ async def ghost_synchronizer(
     Args:
         exchange: SafeExchange instance
         stoploss_percent: Stop loss percentage for new SLs
+        symbol: Optional symbol to filter orders (recommended to avoid rate limits)
         
     Returns:
         Dictionary with sync results
@@ -275,7 +277,7 @@ async def ghost_synchronizer(
     try:
         # Fetch positions and orders
         positions = await exchange.fetch_positions()
-        open_orders = await exchange.fetch_open_orders()
+        open_orders = await exchange.fetch_open_orders(symbol)
         
         if not positions:
             console.print("[green]✓ No open positions - nothing to sync[/green]")
@@ -371,12 +373,13 @@ async def ghost_synchronizer(
         return result
 
 
-async def verify_no_orphan_positions(exchange: SafeExchange) -> bool:
+async def verify_position_safety(exchange: SafeExchange, symbol: Optional[str] = None) -> bool:
     """
-    Quick check that all positions have stop losses.
+    Verify that all positions have stop losses.
     
     Args:
         exchange: SafeExchange instance
+        symbol: Optional symbol to filter orders (recommended to avoid rate limits)
         
     Returns:
         True if all positions have stop losses
@@ -387,7 +390,7 @@ async def verify_no_orphan_positions(exchange: SafeExchange) -> bool:
         if not positions:
             return True
         
-        open_orders = await exchange.fetch_open_orders()
+        open_orders = await exchange.fetch_open_orders(symbol)
         
         for position in positions:
             sl_order = find_stop_loss_for_position(position, open_orders)
@@ -402,12 +405,13 @@ async def verify_no_orphan_positions(exchange: SafeExchange) -> bool:
         return False
 
 
-async def get_position_summary(exchange: SafeExchange) -> List[Dict[str, Any]]:
+async def get_position_summary(exchange: SafeExchange, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Get a summary of all positions with their protection status.
     
     Args:
         exchange: SafeExchange instance
+        symbol: Optional symbol to filter orders (recommended to avoid rate limits)
         
     Returns:
         List of position summaries
@@ -416,7 +420,7 @@ async def get_position_summary(exchange: SafeExchange) -> List[Dict[str, Any]]:
     
     try:
         positions = await exchange.fetch_positions()
-        open_orders = await exchange.fetch_open_orders()
+        open_orders = await exchange.fetch_open_orders(symbol)
         
         for position in positions:
             symbol = position.get('symbol')

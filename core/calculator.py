@@ -67,9 +67,15 @@ def get_step_size(exchange_info: Dict[str, Any], symbol: str) -> Decimal:
         if 'precision' in exchange_info:
             precision = exchange_info['precision']
             if 'amount' in precision:
-                # Precision is given as number of decimal places
                 decimal_places = precision['amount']
-                return Decimal(10) ** -decimal_places
+                # CCXT có 2 kiểu trả về:
+                # 1. Số decimal places (int): 3 -> step = 0.001
+                # 2. Giá trị step trực tiếp (float): 0.001 -> step = 0.001
+                if isinstance(decimal_places, int):
+                    return Decimal(10) ** -decimal_places
+                elif isinstance(decimal_places, float):
+                    # Đây là step size trực tiếp
+                    return parse_decimal(decimal_places)
         
         # Try to get from limits
         if 'limits' in exchange_info and 'amount' in exchange_info['limits']:
@@ -109,7 +115,14 @@ def get_tick_size(exchange_info: Dict[str, Any], symbol: str) -> Decimal:
             precision = exchange_info['precision']
             if 'price' in precision:
                 decimal_places = precision['price']
-                return Decimal(10) ** -decimal_places
+                # CCXT có 2 kiểu trả về:
+                # 1. Số decimal places (int): 2 -> tick = 0.01
+                # 2. Giá trị tick trực tiếp (float): 0.1 -> tick = 0.1
+                if isinstance(decimal_places, int):
+                    return Decimal(10) ** -decimal_places
+                elif isinstance(decimal_places, float):
+                    # Đây là tick size trực tiếp
+                    return parse_decimal(decimal_places)
         
         # Fallback: try to find in info dict (raw exchange data)
         if 'info' in exchange_info and 'filters' in exchange_info['info']:

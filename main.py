@@ -30,6 +30,7 @@ from core.calculator import calculate_safe_quantity, parse_decimal
 from core.execution import execute_atomic_entry, SpreadTooWideError
 from core.safety import ghost_synchronizer, get_position_summary, display_position_summary
 from strategy.scanner import scan_market, get_default_symbols
+from strategy.manager import PositionManager
 
 console = Console()
 
@@ -89,6 +90,11 @@ def load_config() -> dict:
         'testnet': os.getenv('TESTNET', 'false').lower() == 'true',
         'symbol': os.getenv('SYMBOL', 'BTC/USDT'),
         'scan_interval': int(os.getenv('SCAN_INTERVAL', '60')),  # seconds
+        # Take Profit settings (0 = disabled)
+        'takeprofit_percent': float(os.getenv('TAKEPROFIT_PERCENT', '0')),
+        # Trailing Stop settings (0 = disabled)
+        'trailing_activation_percent': float(os.getenv('TRAILING_ACTIVATION_PERCENT', '0')),
+        'trailing_callback_percent': float(os.getenv('TRAILING_CALLBACK_PERCENT', '0.5')),
     }
     
     return config
@@ -117,7 +123,7 @@ async def trading_loop(
     config: dict
 ):
     """
-    Main trading loop.
+    Main trading loop with Trailing Stop support.
     
     Args:
         exchange: SafeExchange instance
@@ -128,8 +134,22 @@ async def trading_loop(
     risk_percent = Decimal(str(config['risk_percent']))
     leverage = config['leverage']
     stoploss_percent = Decimal(str(config['stoploss_percent']))
+    takeprofit_percent = Decimal(str(config['takeprofit_percent']))
+    trailing_activation = Decimal(str(config['trailing_activation_percent']))
+    trailing_callback = Decimal(str(config['trailing_callback_percent']))
     scan_interval = config['scan_interval']
     symbols = get_default_symbols()
+    
+    # Initialize Position Manager for trailing stops
+    position_manager = None
+    if trailing_activation > 0:
+        position_manager = PositionManager(
+            exchange=exchange,
+            trailing_activation_percent=trailing_activation,
+            trailing_callback_percent=trailing_callback,
+            stoploss_percent=stoploss_percent
+        )
+        console.print(f"[green]✓ Trailing Stop enabled: Activation={trailing_activation}%, Callback={trailing_callback}%[/green]")
     
     iteration = 0
     
@@ -143,7 +163,8 @@ async def trading_loop(
         
         try:
             # ====== STEP 1: GHOST SYNCHRONIZER (SAFETY FIRST) ======
-            sync_result = await ghost_synchronizer(exchange, stoploss_percent)
+            # Pass None for symbol to check ALL positions/orders
+            sync_result = await ghost_synchronizer(exchange, stoploss_percent, None)
             
             if sync_result['errors'] > 0:
                 console.print("[yellow]⚠ Safety issues detected - skipping this iteration[/yellow]")
@@ -151,16 +172,37 @@ async def trading_loop(
                 continue
             
             # ====== STEP 2: DISPLAY CURRENT POSITIONS ======
-            summaries = await get_position_summary(exchange)
+            summaries = await get_position_summary(exchange, None)
             display_position_summary(summaries)
             
-            # ====== STEP 3: CHECK IF WE CAN OPEN NEW POSITIONS ======
+            # ====== STEP 3: PROCESS TRAILING STOPS IF POSITION EXISTS ======
+            if summaries and position_manager:
+                console.print("\n[bold]Processing Trailing Stops...[/bold]")
+                
+                # Get positions and orders for trailing stop processing
+                positions = await exchange.fetch_positions()
+                open_orders = await exchange.fetch_open_orders()
+                
+                # Process trailing stops
+                trailing_result = await position_manager.process_trailing_stops(
+                    positions=positions,
+                    open_orders=open_orders
+                )
+                
+                # Display tracker status
+                position_manager.display_tracker_status()
+                
+                # Shorter interval when managing positions
+                await asyncio.sleep(min(scan_interval, 10))
+                continue
+            
+            # ====== STEP 4: CHECK IF WE CAN OPEN NEW POSITIONS ======
             if summaries:
                 console.print("[dim]Already have open position(s) - waiting for exit...[/dim]")
                 await asyncio.sleep(scan_interval)
                 continue
             
-            # ====== STEP 4: SCAN FOR SIGNALS ======
+            # ====== STEP 5: SCAN FOR SIGNALS ======
             signals = await scan_market(
                 exchange=exchange,
                 symbols=symbols,
@@ -173,15 +215,26 @@ async def trading_loop(
                 await asyncio.sleep(scan_interval)
                 continue
             
-            # ====== STEP 5: ATTEMPT ENTRY ON BEST SIGNAL ======
+            # ====== STEP 6: ATTEMPT ENTRY ON BEST SIGNAL ======
             best_signal = signals[0]
+            
+            # Calculate take profit price if enabled
+            tp_price = None
+            if takeprofit_percent > 0:
+                if best_signal.direction == 'LONG':
+                    tp_price = best_signal.entry_price * (Decimal("1") + takeprofit_percent / Decimal("100"))
+                else:
+                    tp_price = best_signal.entry_price * (Decimal("1") - takeprofit_percent / Decimal("100"))
+            
+            tp_info = f"\nTake Profit: {tp_price}" if tp_price else ""
+            trailing_info = f"\nTrailing: Activation={trailing_activation}%, Callback={trailing_callback}%" if trailing_activation > 0 else ""
             
             console.print(Panel(
                 f"[bold green]SIGNAL DETECTED[/bold green]\n"
                 f"Symbol: {best_signal.symbol}\n"
                 f"Direction: {best_signal.direction}\n"
                 f"Entry: {best_signal.entry_price}\n"
-                f"Stop Loss: {best_signal.stoploss_price}\n"
+                f"Stop Loss: {best_signal.stoploss_price}{tp_info}{trailing_info}\n"
                 f"Reason: {best_signal.reason}",
                 title="📈 TRADE OPPORTUNITY",
                 border_style="green"
@@ -223,14 +276,19 @@ async def trading_loop(
                     symbol=best_signal.symbol,
                     side=side,
                     quantity=quantity,
-                    stoploss_price=best_signal.stoploss_price
+                    stoploss_price=best_signal.stoploss_price,
+                    takeprofit_price=tp_price  # Optional TP
                 )
                 
                 if result['success']:
+                    tp_order_info = ""
+                    if result.get('take_profit_order'):
+                        tp_order_info = f"\nTake Profit: {result['take_profit_order']['id']}"
+                    
                     console.print(Panel(
                         f"[bold green]TRADE EXECUTED[/bold green]\n"
                         f"Entry: {result['entry_order']['id']}\n"
-                        f"Stop Loss: {result['stop_loss_order']['id']}\n"
+                        f"Stop Loss: {result['stop_loss_order']['id']}{tp_order_info}\n"
                         f"Executed: {result['executed_qty']} @ {result['average_price']}",
                         title="✅ SUCCESS",
                         border_style="green"
@@ -278,6 +336,8 @@ async def main():
         console.print(f"[dim]Risk: {config['risk_percent']}%[/dim]")
         console.print(f"[dim]Leverage: {config['leverage']}x[/dim]")
         console.print(f"[dim]Stop Loss: {config['stoploss_percent']}%[/dim]")
+        console.print(f"[dim]Take Profit: {config['takeprofit_percent']}% {'(enabled)' if config['takeprofit_percent'] > 0 else '(disabled)'}[/dim]")
+        console.print(f"[dim]Trailing: Activation={config['trailing_activation_percent']}%, Callback={config['trailing_callback_percent']}% {'(enabled)' if config['trailing_activation_percent'] > 0 else '(disabled)'}[/dim]")
         console.print(f"[dim]Testnet: {config['testnet']}[/dim]")
         
         # Set up signal handlers

@@ -279,9 +279,10 @@ async def bootstrap_system(exchange, risk_percent: float, leverage: int, symbol:
     console.print("\n[bold]Step 3/5: Time Sync[/bold]")
     await sync_time_with_exchange(exchange)
     
-    # Step 4: Cancel all open orders
+    # Step 4: Cancel all open orders for the trading symbol
     console.print("\n[bold]Step 4/5: Order Cleanup[/bold]")
-    await force_cancel_all_orders(exchange)
+    # CHỈ HỦY LỆNH TRÊN CẶP ĐANG TRADE ĐỂ TRÁNH LỖI RATE LIMIT
+    await force_cancel_all_orders(exchange, symbol)
     
     # Step 5: Set margin mode and leverage
     console.print("\n[bold]Step 5/5: Margin Configuration[/bold]")
