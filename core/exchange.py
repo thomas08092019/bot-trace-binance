@@ -249,6 +249,21 @@ class SafeExchange:
         
         return ticker
     
+    async def fetch_tickers(self) -> Dict[str, Any]:
+        """
+        Fetch all tickers (for volume ranking).
+        
+        Returns:
+            Dictionary of tickers keyed by symbol
+            
+        Raises:
+            ExchangeError: If fetch fails
+        """
+        if self.exchange is None:
+            raise ExchangeError("Exchange not connected")
+        
+        return await self._retry_async(self.exchange.fetch_tickers)
+    
     async def fetch_balance(self) -> Dict[str, Any]:
         """
         Fetch account balance.

@@ -307,27 +307,77 @@ async def scan_market(
     return top_signals
 
 
+async def fetch_top_symbols(
+    exchange,
+    limit: int = 15
+) -> List[str]:
+    """
+    Fetch top symbols by 24h volume dynamically.
+    
+    Args:
+        exchange: SafeExchange instance
+        limit: Number of top symbols to return
+        
+    Returns:
+        List of top volume symbols (USDT pairs only)
+    """
+    try:
+        # Fetch all tickers
+        tickers = await exchange.fetch_tickers()
+        
+        # Filter for USDT pairs and extract volume data
+        usdt_pairs = []
+        for symbol, ticker in tickers.items():
+            if symbol.endswith('/USDT:USDT'):  # Futures format
+                volume = float(ticker.get('quoteVolume', 0))
+                if volume > 0:
+                    usdt_pairs.append({
+                        'symbol': symbol,
+                        'volume': volume
+                    })
+        
+        # Sort by volume (descending)
+        usdt_pairs.sort(key=lambda x: x['volume'], reverse=True)
+        
+        # Get top N symbols
+        top_symbols = [pair['symbol'] for pair in usdt_pairs[:limit]]
+        
+        if top_symbols:
+            # Format for display
+            top_display = ', '.join([s.split('/')[0] for s in top_symbols[:5]])
+            console.print(f"[green]✓ Updated watchlist with Top {limit} Volume pairs: {top_display}...[/green]")
+        
+        return top_symbols
+        
+    except Exception as e:
+        console.print(f"[yellow]⚠ Error fetching top symbols: {e}[/yellow]")
+        # Fallback to default symbols
+        return get_default_symbols()
+
+
 def get_default_symbols() -> List[str]:
     """
-    Get default list of symbols to scan.
+    Get default list of symbols to scan (fallback).
+    
+    DEPRECATED: Use fetch_top_symbols() instead for dynamic ranking.
     
     Returns:
         List of popular trading pairs
     """
     return [
-        'BTC/USDT',
-        'ETH/USDT',
-        'BNB/USDT',
-        'SOL/USDT',
-        'XRP/USDT',
-        'DOGE/USDT',
-        'ADA/USDT',
-        'AVAX/USDT',
-        'DOT/USDT',
-        'MATIC/USDT',
-        'LINK/USDT',
-        'UNI/USDT',
-        'ATOM/USDT',
-        'LTC/USDT',
-        'ETC/USDT',
+        'BTC/USDT:USDT',
+        'ETH/USDT:USDT',
+        'BNB/USDT:USDT',
+        'SOL/USDT:USDT',
+        'XRP/USDT:USDT',
+        'DOGE/USDT:USDT',
+        'ADA/USDT:USDT',
+        'AVAX/USDT:USDT',
+        'DOT/USDT:USDT',
+        'MATIC/USDT:USDT',
+        'LINK/USDT:USDT',
+        'UNI/USDT:USDT',
+        'ATOM/USDT:USDT',
+        'LTC/USDT:USDT',
+        'ETC/USDT:USDT',
     ]

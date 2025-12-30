@@ -29,7 +29,7 @@ from core.exchange import create_exchange, SafeExchange, StaleDataError, Exchang
 from core.calculator import calculate_safe_quantity, parse_decimal
 from core.execution import execute_atomic_entry, SpreadTooWideError
 from core.safety import ghost_synchronizer, get_position_summary, display_position_summary
-from strategy.scanner import scan_market, get_default_symbols
+from strategy.scanner import scan_market, get_default_symbols, fetch_top_symbols
 from strategy.manager import PositionManager
 
 console = Console()
@@ -138,7 +138,6 @@ async def trading_loop(
     trailing_activation = Decimal(str(config['trailing_activation_percent']))
     trailing_callback = Decimal(str(config['trailing_callback_percent']))
     scan_interval = config['scan_interval']
-    symbols = get_default_symbols()
     
     # Initialize Position Manager for trailing stops
     position_manager = None
@@ -152,6 +151,7 @@ async def trading_loop(
         console.print(f"[green]✓ Trailing Stop enabled: Activation={trailing_activation}%, Callback={trailing_callback}%[/green]")
     
     iteration = 0
+    symbols = []  # Will be fetched dynamically
     
     while not shutdown_requested:
         iteration += 1
@@ -162,6 +162,14 @@ async def trading_loop(
         ))
         
         try:
+            # ====== STEP 0: UPDATE SYMBOL WATCHLIST (Every 5 iterations) ======
+            if iteration % 5 == 1 or not symbols:
+                console.print("[dim]Updating symbol watchlist...[/dim]")
+                symbols = await fetch_top_symbols(exchange, limit=15)
+                if not symbols:
+                    console.print("[yellow]⚠ No symbols available - using fallback[/yellow]")
+                    symbols = get_default_symbols()
+            
             # ====== STEP 1: GHOST SYNCHRONIZER (SAFETY FIRST) ======
             # Pass None for symbol to check ALL positions/orders
             sync_result = await ghost_synchronizer(exchange, stoploss_percent, None)
