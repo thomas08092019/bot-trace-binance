@@ -75,7 +75,7 @@ def get_step_size(exchange_info: Dict[str, Any], symbol: str) -> Decimal:
                 if isinstance(decimal_places, int):
                     return Decimal(10) ** -decimal_places
                 elif isinstance(decimal_places, float):
-                    # Đây là step size trực tiếp
+                    # This is direct step size
                     return parse_decimal(decimal_places)
         
         # Try to get from limits
@@ -116,13 +116,13 @@ def get_tick_size(exchange_info: Dict[str, Any], symbol: str) -> Decimal:
             precision = exchange_info['precision']
             if 'price' in precision:
                 decimal_places = precision['price']
-                # CCXT có 2 kiểu trả về:
-                # 1. Số decimal places (int): 2 -> tick = 0.01
-                # 2. Giá trị tick trực tiếp (float): 0.1 -> tick = 0.1
+                # CCXT has 2 return types:
+                # 1. Number of decimal places (int): 2 -> tick = 0.01
+                # 2. Direct tick value (float): 0.1 -> tick = 0.1
                 if isinstance(decimal_places, int):
                     return Decimal(10) ** -decimal_places
                 elif isinstance(decimal_places, float):
-                    # Đây là tick size trực tiếp
+                    # This is direct tick size
                     return parse_decimal(decimal_places)
         
         # Fallback: try to find in info dict (raw exchange data)

@@ -281,7 +281,7 @@ async def bootstrap_system(exchange, risk_percent: float, leverage: int, symbol:
     
     # Step 4: Cancel all open orders for the trading symbol
     console.print("\n[bold]Step 4/5: Order Cleanup[/bold]")
-    # CHỈ HỦY LỆNH TRÊN CẶP ĐANG TRADE ĐỂ TRÁNH LỖI RATE LIMIT
+    # ONLY CANCEL ORDERS FOR THE TRADING PAIR TO AVOID RATE LIMIT ERRORS
     await force_cancel_all_orders(exchange, symbol)
     
     # Step 5: Set margin mode and leverage

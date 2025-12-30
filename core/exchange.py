@@ -97,19 +97,19 @@ class SafeExchange:
             }
         }
         
-        # Testnet không hỗ trợ sapi endpoints (fetch_currencies)
-        # Phải disable trước khi init exchange
+        # Testnet does not support sapi endpoints (fetch_currencies)
+        # Must disable before initializing exchange
         if self.testnet:
             config['options'] = config.get('options', {})
             config['options']['fetchCurrencies'] = False
-            # Suppress warning khi fetch all open orders (cần thiết cho Ghost Synchronizer)
+            # Suppress warning when fetching all open orders (required for Ghost Synchronizer)
             config['options']['warnOnFetchOpenOrdersWithoutSymbol'] = False
         
         self.exchange = ccxt.binanceusdm(config)
         
         if self.testnet:
-            # KHÔNG DÙNG set_sandbox_mode(True) NỮA - Binance đã thay đổi cơ chế
-            # Thủ công set URL cho Testnet Futures (bao gồm tất cả API versions)
+            # DO NOT use set_sandbox_mode(True) anymore - Binance has changed the mechanism
+            # Manually set URL for Testnet Futures (includes all API versions)
             self.exchange.urls['api'] = {
                 'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
                 'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1',

@@ -254,18 +254,20 @@ async def execute_atomic_entry(
     side: str,
     quantity: Decimal,
     stoploss_price: Decimal,
-    takeprofit_price: Optional[Decimal] = None
+    takeprofit_price: Optional[Decimal] = None,
+    leverage: int = 10
 ) -> Dict[str, Any]:
     """
     Execute atomic entry sequence: Market Order + Stop Loss + Optional Take Profit.
     
     ATOMIC SEQUENCE:
-    1. Check spread (abort if > 0.1%)
-    2. Place market entry order
-    3. Verify executed quantity and average price
-    4. Place stop loss based on ACTUAL executed qty
-    5. If stop loss fails -> Emergency close position
-    6. (Optional) Place take profit order
+    1. Set leverage and margin mode (ISOLATED)
+    2. Check spread (abort if > 0.1%)
+    3. Place market entry order
+    4. Verify executed quantity and average price
+    5. Place stop loss based on ACTUAL executed qty
+    6. If stop loss fails -> Emergency close position
+    7. (Optional) Place take profit order
     
     Args:
         exchange: SafeExchange instance
@@ -274,6 +276,7 @@ async def execute_atomic_entry(
         quantity: Quantity to trade
         stoploss_price: Stop loss trigger price
         takeprofit_price: Optional take profit price (None to disable)
+        leverage: Leverage to use (default 10)
         
     Returns:
         Dictionary with entry and stop loss order details
@@ -309,8 +312,26 @@ async def execute_atomic_entry(
         border_style="cyan"
     ))
     
+    # ====== STEP 0: SET LEVERAGE AND MARGIN MODE ======
+    console.print("\n[bold]Step 0/5: Margin Configuration[/bold]")
+    try:
+        # Set margin mode to ISOLATED
+        try:
+            await exchange.set_margin_mode('isolated', symbol)
+            console.print(f"[green]✓ Margin mode set to ISOLATED for {symbol}[/green]")
+        except Exception as e:
+            # Margin mode may already be set, which is fine
+            console.print(f"[dim]⚠ Margin mode note: {e}[/dim]")
+        
+        # Set leverage
+        await exchange.set_leverage(leverage, symbol)
+        console.print(f"[green]✓ Leverage set to {leverage}x for {symbol}[/green]")
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not configure margin/leverage: {e}[/yellow]")
+        # Continue anyway - may already be configured
+    
     # ====== STEP 1: CHECK SPREAD ======
-    console.print("\n[bold]Step 1/4: Spread Check[/bold]")
+    console.print("\n[bold]Step 1/5: Spread Check[/bold]")
     try:
         await check_spread(exchange, symbol)
     except SpreadTooWideError as e:
@@ -318,7 +339,7 @@ async def execute_atomic_entry(
         raise
     
     # ====== STEP 2: MARKET ENTRY ======
-    console.print("\n[bold]Step 2/4: Market Entry[/bold]")
+    console.print("\n[bold]Step 2/5: Market Entry[/bold]")
     try:
         entry_order = await exchange.create_market_order(
             symbol=symbol,
@@ -331,7 +352,7 @@ async def execute_atomic_entry(
         raise ExecutionError(f"Entry order failed: {e}")
     
     # ====== STEP 3: VERIFY EXECUTION ======
-    console.print("\n[bold]Step 3/4: Verify Execution[/bold]")
+    console.print("\n[bold]Step 3/5: Verify Execution[/bold]")
     
     # Get the actual executed quantity and average price
     executed_qty = parse_decimal(entry_order.get('filled', 0))
@@ -357,7 +378,7 @@ async def execute_atomic_entry(
         return result
     
     # ====== STEP 4: PLACE STOP LOSS (ATOMIC DEFENSE) ======
-    console.print("\n[bold]Step 4/4: Atomic Defense (Stop Loss)[/bold]")
+    console.print("\n[bold]Step 4/5: Atomic Defense (Stop Loss)[/bold]")
     
     # CRITICAL: Use ACTUAL executed quantity, not requested quantity
     sl_order = await place_stop_loss(
