@@ -162,13 +162,12 @@ async def trading_loop(
         ))
         
         try:
-            # ====== STEP 0: UPDATE SYMBOL WATCHLIST (Every 5 iterations) ======
-            if iteration % 5 == 1 or not symbols:
-                console.print("[dim]Updating symbol watchlist...[/dim]")
-                symbols = await fetch_top_symbols(exchange, limit=15)
-                if not symbols:
-                    console.print("[yellow]⚠ No symbols available - using fallback[/yellow]")
-                    symbols = get_default_symbols()
+            # ====== STEP 0: UPDATE SYMBOL WATCHLIST (Every iteration for real-time volume) ======
+            console.print("[dim]Updating symbol watchlist...[/dim]")
+            symbols = await fetch_top_symbols(exchange, limit=15)
+            if not symbols:
+                console.print("[yellow]⚠ No symbols available - using fallback[/yellow]")
+                symbols = get_default_symbols()
             
             # ====== STEP 1: GHOST SYNCHRONIZER (SAFETY FIRST) ======
             # Pass None for symbol to check ALL positions/orders
