@@ -371,7 +371,8 @@ async def fetch_top_symbols(
         # Filter for USDT pairs and extract volume data
         usdt_pairs = []
         for symbol, ticker in tickers.items():
-            if symbol.endswith('/USDT:USDT'):  # Futures format
+            # Accept both Futures formats: 'BTC/USDT:USDT' and 'BTC/USDT'
+            if symbol.endswith('/USDT:USDT') or symbol.endswith('/USDT'):
                 volume = float(ticker.get('quoteVolume', 0))
                 if volume > 0:
                     usdt_pairs.append({
