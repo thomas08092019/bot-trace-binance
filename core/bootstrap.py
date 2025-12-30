@@ -213,20 +213,21 @@ async def force_cancel_all_orders(exchange, symbol: Optional[str] = None) -> int
         return 0
 
 
-async def force_isolated_margin(exchange, symbol: str, leverage: int) -> None:
+async def force_margin_config(exchange, symbol: str, leverage: int, margin_mode: str = 'isolated') -> None:
     """
-    Force margin type to ISOLATED and set leverage.
+    Force margin type and set leverage.
     
     Args:
         exchange: CCXT exchange instance
         symbol: Trading symbol
         leverage: Leverage to set
+        margin_mode: Margin mode ('isolated' or 'cross')
     """
     try:
-        # Set margin type to ISOLATED
+        # Set margin mode (ISOLATED or CROSS)
         try:
-            await exchange.set_margin_mode('isolated', symbol)
-            console.print(f"[green]✓ Margin mode set to ISOLATED for {symbol}[/green]")
+            await exchange.set_margin_mode(margin_mode, symbol)
+            console.print(f"[green]✓ Margin mode set to {margin_mode.upper()} for {symbol}[/green]")
         except Exception as e:
             # May fail if already set - this is OK
             if 'No need to change margin type' not in str(e):
@@ -238,10 +239,16 @@ async def force_isolated_margin(exchange, symbol: str, leverage: int) -> None:
         
     except Exception as e:
         console.print(f"[red]✗ Error setting margin/leverage: {e}[/red]")
+
+
+# Backward compatibility alias
+async def force_isolated_margin(exchange, symbol: str, leverage: int) -> None:
+    """Deprecated: Use force_margin_config instead."""
+    await force_margin_config(exchange, symbol, leverage, 'isolated')
         raise BootstrapError(f"Failed to configure margin/leverage: {e}")
 
 
-async def bootstrap_system(exchange, risk_percent: float, leverage: int, symbol: str) -> SingleInstanceLock:
+async def bootstrap_system(exchange, risk_percent: float, leverage: int, symbol: str, margin_mode: str = 'isolated') -> SingleInstanceLock:
     """
     Complete system bootstrap sequence.
     
@@ -286,7 +293,7 @@ async def bootstrap_system(exchange, risk_percent: float, leverage: int, symbol:
     
     # Step 5: Set margin mode and leverage
     console.print("\n[bold]Step 5/5: Margin Configuration[/bold]")
-    await force_isolated_margin(exchange, symbol, leverage)
+    await force_margin_config(exchange, symbol, leverage, margin_mode)
     
     console.print(Panel(
         "[bold green]ALL SYSTEMS GO[/bold green]\n"

@@ -255,7 +255,8 @@ async def execute_atomic_entry(
     quantity: Decimal,
     stoploss_price: Decimal,
     takeprofit_price: Optional[Decimal] = None,
-    leverage: int = 10
+    leverage: int = 10,
+    margin_mode: str = 'isolated'
 ) -> Dict[str, Any]:
     """
     Execute atomic entry sequence: Market Order + Stop Loss + Optional Take Profit.
@@ -315,10 +316,10 @@ async def execute_atomic_entry(
     # ====== STEP 0: SET LEVERAGE AND MARGIN MODE ======
     console.print("\n[bold]Step 0/5: Margin Configuration[/bold]")
     try:
-        # Set margin mode to ISOLATED
+        # Set margin mode (ISOLATED or CROSS)
         try:
-            await exchange.set_margin_mode('isolated', symbol)
-            console.print(f"[green]✓ Margin mode set to ISOLATED for {symbol}[/green]")
+            await exchange.set_margin_mode(margin_mode, symbol)
+            console.print(f"[green]✓ Margin mode set to {margin_mode.upper()} for {symbol}[/green]")
         except Exception as e:
             # Margin mode may already be set, which is fine
             console.print(f"[dim]⚠ Margin mode note: {e}[/dim]")

@@ -91,6 +91,7 @@ def load_config() -> dict:
         'secret_key': secret_key,
         'risk_percent': float(os.getenv('RISK_PERCENT', '1.0')),
         'leverage': int(os.getenv('LEVERAGE', '10')),
+        'margin_mode': os.getenv('MARGIN_MODE', 'isolated').lower(),
         'stoploss_percent': float(os.getenv('STOPLOSS_PERCENT', '2.0')),
         'max_position_percent': float(os.getenv('MAX_POSITION_PERCENT', '10.0')),
         'max_concurrent_positions': int(os.getenv('MAX_CONCURRENT_POSITIONS', '5')),
@@ -142,6 +143,7 @@ async def trading_loop(
     
     risk_percent = Decimal(str(config['risk_percent']))
     leverage = config['leverage']
+    margin_mode = config['margin_mode']
     stoploss_percent = Decimal(str(config['stoploss_percent']))
     max_position_percent = Decimal(str(config['max_position_percent']))
     max_concurrent_positions = config['max_concurrent_positions']
@@ -159,6 +161,8 @@ async def trading_loop(
     console.print(f"  Max Concurrent Positions: {max_concurrent_positions}")
     console.print(f"  Total Margin Pool: {max_position_percent}%")
     console.print(f"  Per-Position Limit: {per_position_percent}%")
+    console.print(f"  Margin Mode: {margin_mode.upper()}")
+    console.print(f"  Leverage: {leverage}x")
     console.print(f"[cyan]Scanner Settings:[/cyan]")
     console.print(f"  Base Symbols: {base_symbol_limit}")
     console.print(f"  Max Symbols: {max_symbol_limit} (progressive)")
@@ -353,7 +357,8 @@ async def trading_loop(
                             quantity=quantity,
                             stoploss_price=signal.stoploss_price,
                             takeprofit_price=tp_price,  # Optional TP
-                            leverage=leverage  # Pass leverage to set per-position
+                            leverage=leverage,  # Pass leverage to set per-position
+                            margin_mode=margin_mode  # Pass margin mode (isolated/cross)
                         )
                         
                         if result['success']:
@@ -447,7 +452,8 @@ async def main():
             exchange=exchange.exchange,  # Pass the raw CCXT exchange
             risk_percent=config['risk_percent'],
             leverage=config['leverage'],
-            symbol=config['symbol']
+            symbol=config['symbol'],
+            margin_mode=config['margin_mode']
         )
         
         # Start trading loop
