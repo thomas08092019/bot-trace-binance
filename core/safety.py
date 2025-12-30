@@ -7,6 +7,7 @@ Implements:
 - Auto-fix any mismatches (human intervention detection)
 """
 
+import os
 import asyncio
 from decimal import Decimal
 from typing import List, Dict, Any, Optional, Tuple
@@ -20,8 +21,8 @@ from .calculator import parse_decimal, get_tick_size, floor_price_to_tick
 
 console = Console()
 
-# Tolerance for quantity mismatch (to account for floating point)
-QTY_MISMATCH_TOLERANCE = Decimal("0.00001")
+# Load config from environment (with defaults)
+QTY_MISMATCH_TOLERANCE = Decimal(os.getenv('QTY_MISMATCH_TOLERANCE', '0.00001'))
 
 
 class SafetyError(Exception):

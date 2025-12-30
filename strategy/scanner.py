@@ -7,6 +7,7 @@ Implements:
 - Signal generation for entry opportunities
 """
 
+import os
 import asyncio
 from decimal import Decimal
 from typing import List, Dict, Any, Optional, Tuple
@@ -17,16 +18,16 @@ from rich.table import Table
 
 console = Console()
 
-# Minimum 24h volume in USDT
-MIN_VOLUME_USDT = Decimal("10000000")  # 10M USDT
+# Load config from environment (with defaults)
+MIN_VOLUME_USDT = Decimal(os.getenv('MIN_VOLUME_USDT', '10000000'))
 
 # Technical indicator settings
-RSI_PERIOD = 14
-RSI_OVERSOLD = 30
-RSI_OVERBOUGHT = 70
+RSI_PERIOD = int(os.getenv('RSI_PERIOD', '14'))
+RSI_OVERSOLD = float(os.getenv('RSI_OVERSOLD', '45'))
+RSI_OVERBOUGHT = float(os.getenv('RSI_OVERBOUGHT', '55'))
 
-EMA_FAST_PERIOD = 9
-EMA_SLOW_PERIOD = 21
+EMA_FAST_PERIOD = int(os.getenv('EMA_FAST_PERIOD', '9'))
+EMA_SLOW_PERIOD = int(os.getenv('EMA_SLOW_PERIOD', '21'))
 
 
 @dataclass
@@ -168,10 +169,24 @@ async def analyze_symbol(
         
         current_price = Decimal(str(closes[-1]))
         
+        # Get EMA position for logging
+        ema_position = "BULLISH" if fast_ema[-1] > slow_ema[-1] else "BEARISH"
+        ema_cross_str = f", {crossover} cross" if crossover else ""
+        
+        # Log analysis details
+        coin_name = symbol.split('/')[0]
+        console.print(
+            f"  [cyan]{coin_name:8}[/cyan] │ "
+            f"RSI: [yellow]{rsi:5.1f}[/yellow] │ "
+            f"EMA: [{'green' if ema_position == 'BULLISH' else 'red'}]{ema_position}{ema_cross_str}[/{'green' if ema_position == 'BULLISH' else 'red'}]",
+            end=""
+        )
+        
         signal = None
         
-        # LONG signal: RSI oversold + bullish EMA cross
-        if rsi < RSI_OVERSOLD and crossover == 'BULLISH':
+        # RELAXED TESTNET LOGIC: RSI + EMA position (no crossover required)
+        # LONG signal: RSI oversold + EMA is bullish (uptrend)
+        if rsi < RSI_OVERSOLD and ema_position == 'BULLISH':
             sl_price = current_price * (Decimal("1") - stoploss_percent / Decimal("100"))
             signal = Signal(
                 symbol=symbol,
@@ -179,11 +194,12 @@ async def analyze_symbol(
                 strength=min((RSI_OVERSOLD - rsi) / RSI_OVERSOLD, 1.0),
                 entry_price=current_price,
                 stoploss_price=sl_price,
-                reason=f"RSI oversold ({rsi:.1f}) + Bullish EMA crossover"
+                reason=f"RSI oversold ({rsi:.1f}) + Bullish EMA trend"
             )
+            console.print(f" → [bold green]LONG SIGNAL![/bold green] (Strength: {signal.strength:.2f})")
         
-        # SHORT signal: RSI overbought + bearish EMA cross
-        elif rsi > RSI_OVERBOUGHT and crossover == 'BEARISH':
+        # SHORT signal: RSI overbought + EMA is bearish (downtrend)
+        elif rsi > RSI_OVERBOUGHT and ema_position == 'BEARISH':
             sl_price = current_price * (Decimal("1") + stoploss_percent / Decimal("100"))
             signal = Signal(
                 symbol=symbol,
@@ -191,8 +207,22 @@ async def analyze_symbol(
                 strength=min((rsi - RSI_OVERBOUGHT) / (100 - RSI_OVERBOUGHT), 1.0),
                 entry_price=current_price,
                 stoploss_price=sl_price,
-                reason=f"RSI overbought ({rsi:.1f}) + Bearish EMA crossover"
+                reason=f"RSI overbought ({rsi:.1f}) + Bearish EMA trend"
             )
+            console.print(f" → [bold red]SHORT SIGNAL![/bold red] (Strength: {signal.strength:.2f})")
+        
+        else:
+            # Log why no signal
+            reasons = []
+            if rsi >= RSI_OVERSOLD and rsi <= RSI_OVERBOUGHT:
+                reasons.append(f"RSI neutral ({rsi:.1f})")
+            elif rsi < RSI_OVERSOLD and ema_position == 'BEARISH':
+                reasons.append(f"RSI oversold but EMA bearish")
+            elif rsi > RSI_OVERBOUGHT and ema_position == 'BULLISH':
+                reasons.append(f"RSI overbought but EMA bullish")
+            
+            reason_str = ", ".join(reasons) if reasons else "No conditions met"
+            console.print(f" → [dim]{reason_str}[/dim]")
         
         return signal
         
@@ -267,7 +297,9 @@ async def scan_market(
         return []
     
     # Step 2: Analyze symbols
-    console.print(f"[dim]Analyzing {len(volume_filtered)} symbols...[/dim]")
+    console.print(f"\n[bold]Analyzing {len(volume_filtered)} symbols:[/bold]")
+    symbols_str = ', '.join([s.split('/')[0] for s in volume_filtered])
+    console.print(f"[dim]{symbols_str}[/dim]\n")
     
     signals = []
     for symbol in volume_filtered:
@@ -343,9 +375,21 @@ async def fetch_top_symbols(
         top_symbols = [pair['symbol'] for pair in usdt_pairs[:limit]]
         
         if top_symbols:
-            # Format for display
-            top_display = ', '.join([s.split('/')[0] for s in top_symbols[:5]])
-            console.print(f"[green]✓ Updated watchlist with Top {limit} Volume pairs: {top_display}...[/green]")
+            # Display detailed table
+            table = Table(title=f"Top {limit} Volume Pairs")
+            table.add_column("Rank", style="dim")
+            table.add_column("Symbol", style="cyan")
+            table.add_column("24h Volume (USDT)", style="green", justify="right")
+            
+            for i, pair in enumerate(usdt_pairs[:limit], 1):
+                volume_m = pair['volume'] / 1_000_000
+                table.add_row(
+                    str(i),
+                    pair['symbol'].split('/')[0],
+                    f"{volume_m:,.2f}M"
+                )
+            
+            console.print(table)
         
         return top_symbols
         

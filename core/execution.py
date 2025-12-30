@@ -9,6 +9,7 @@ Implements:
 - Emergency market close on failure
 """
 
+import os
 import asyncio
 from decimal import Decimal
 from typing import Optional, Dict, Any, Tuple
@@ -28,8 +29,8 @@ from .calculator import (
 
 console = Console()
 
-# Spread threshold (0.1% = 0.001)
-MAX_SPREAD_RATIO = Decimal("0.001")
+# Load config from environment (with defaults)
+MAX_SPREAD_RATIO = Decimal(os.getenv('MAX_SPREAD_RATIO', '0.001'))
 
 # Maximum retries for stop loss placement
 MAX_SL_RETRIES = 5

@@ -7,6 +7,7 @@ Implements:
 - All calculations use decimal.Decimal for precision
 """
 
+import os
 import math
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 from typing import Optional, Dict, Any
@@ -15,8 +16,8 @@ from rich.console import Console
 
 console = Console()
 
-# Minimum notional value (USDT) - orders below this will be rejected
-MIN_NOTIONAL_USDT = Decimal("6.0")
+# Load config from environment (with defaults)
+MIN_NOTIONAL_USDT = Decimal(os.getenv('MIN_NOTIONAL_USDT', '6.0'))
 
 
 class CalculatorError(Exception):

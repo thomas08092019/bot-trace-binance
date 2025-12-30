@@ -8,6 +8,7 @@ Implements:
 - Automatic retry logic with exponential backoff
 """
 
+import os
 import asyncio
 import time
 import uuid
@@ -19,14 +20,13 @@ from rich.console import Console
 
 console = Console()
 
-# Stale data threshold in milliseconds
-# Testnet có latency cao hơn, nên dùng threshold cao hơn
-STALE_DATA_THRESHOLD_MS = 10000  # 10 seconds (mainnet nên dùng 3000)
+# Load config from environment (with defaults)
+STALE_DATA_THRESHOLD_MS = int(os.getenv('STALE_DATA_THRESHOLD_MS', '10000'))
 
 # Retry configuration
-MAX_RETRIES = 5
-RETRY_BASE_DELAY = 1.0  # seconds
-RETRY_MAX_DELAY = 30.0  # seconds
+MAX_RETRIES = int(os.getenv('MAX_RETRIES', '5'))
+RETRY_BASE_DELAY = 1.0
+RETRY_MAX_DELAY = 30.0
 
 
 class StaleDataError(Exception):
