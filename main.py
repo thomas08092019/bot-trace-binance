@@ -35,6 +35,7 @@ from core.calculator import calculate_safe_quantity, parse_decimal
 from core.execution import execute_atomic_entry, SpreadTooWideError
 from core.safety import ghost_synchronizer, get_position_summary, display_position_summary
 from core.risk_manager import DynamicRiskManager
+from core.notifier import Notifier, set_notifier, get_notifier
 from strategy.scanner import scan_market, get_default_symbols, fetch_top_symbols
 from strategy.manager import PositionManager
 
@@ -44,6 +45,7 @@ console = Console()
 shutdown_requested = False
 lock: Optional[SingleInstanceLock] = None
 exchange: Optional[SafeExchange] = None
+notifier: Optional[Notifier] = None
 
 
 def signal_handler(signum, frame):
@@ -191,6 +193,21 @@ async def trading_loop(
         max_leverage=int(os.getenv('MAX_LEVERAGE', '20')),
         enabled=config['enable_dynamic_risk']
     )
+    
+    # Initialize Notification System (Optional)
+    global notifier
+    notifier = Notifier()
+    set_notifier(notifier)
+    
+    # Send startup notification
+    if notifier.is_enabled():
+        try:
+            await notifier.send_startup(
+                balance=float(balance),
+                testnet=config.get('testnet', False)
+            )
+        except Exception as e:
+            console.print(f"[yellow]⚠ Failed to send startup notification: {e}[/yellow]")
     
     iteration = 0
     symbols = []  # Will be fetched dynamically

@@ -7,6 +7,7 @@ Implements:
 - Optional Take Profit order placement
 - Stop loss based on ACTUAL executedQty (not requested qty)
 - Emergency market close on failure
+- Optional notifications for trade events
 """
 
 import os
@@ -26,6 +27,7 @@ from .calculator import (
     get_tick_size,
     validate_min_notional
 )
+from .notifier import get_notifier
 
 console = Console()
 
@@ -378,6 +380,20 @@ async def execute_atomic_entry(
         result['success'] = True
         return result
     
+    # Send entry notification
+    notifier = get_notifier()
+    if notifier and notifier.is_enabled():
+        try:
+            await notifier.send_entry(
+                symbol=symbol,
+                side='LONG' if is_long else 'SHORT',
+                entry_price=float(average_price),
+                quantity=float(executed_qty),
+                leverage=leverage
+            )
+        except Exception as e:
+            console.print(f"[yellow]⚠ Failed to send entry notification: {e}[/yellow]")
+    
     # ====== STEP 4: PLACE STOP LOSS (ATOMIC DEFENSE) ======
     console.print("\n[bold]Step 4/5: Atomic Defense (Stop Loss)[/bold]")
     
@@ -394,6 +410,19 @@ async def execute_atomic_entry(
     if sl_order:
         result['stop_loss_order'] = sl_order
         result['success'] = True
+        
+        # Send stop loss placed notification
+        notifier = get_notifier()
+        if notifier and notifier.is_enabled():
+            try:
+                await notifier.send_stop_placed(
+                    symbol=symbol,
+                    side='LONG' if is_long else 'SHORT',
+                    stop_price=float(stoploss_price),
+                    quantity=float(executed_qty)
+                )
+            except Exception as e:
+                console.print(f"[yellow]⚠ Failed to send SL notification: {e}[/yellow]")
         
         # ====== STEP 5 (OPTIONAL): PLACE TAKE PROFIT ======
         if takeprofit_price is not None and takeprofit_price > 0:

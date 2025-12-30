@@ -18,6 +18,7 @@ from rich.panel import Panel
 
 from .exchange import SafeExchange, ExchangeError
 from .calculator import parse_decimal, get_tick_size, floor_price_to_tick
+from .notifier import get_notifier
 
 console = Console()
 
@@ -383,6 +384,18 @@ async def ghost_synchronizer(
                     all_synced = False
                     console.print(f"[yellow]⚠ SL placement failed for {symbol} - will retry next cycle[/yellow]")
                     
+                    # Send critical alert for naked position
+                    notifier = get_notifier()
+                    if notifier and notifier.is_enabled():
+                        try:
+                            await notifier.send_critical_alert(
+                                title="NAKED POSITION DETECTED",
+                                message=f"Position without stop loss: {symbol}",
+                                details=f"Side: {pos_side}\nQty: {pos_qty}\nFailed to place SL - MANUAL INTERVENTION NEEDED"
+                            )
+                        except Exception as e:
+                            console.print(f"[yellow]⚠ Failed to send alert: {e}[/yellow]")
+                    
             else:
                 # Check quantity match
                 sl_qty = parse_decimal(sl_order.get('amount', 0))
@@ -406,6 +419,18 @@ async def ghost_synchronizer(
                     else:
                         result['errors'] += 1
                         all_synced = False
+                        
+                        # Send critical alert for mismatch fix failure
+                        notifier = get_notifier()
+                        if notifier and notifier.is_enabled():
+                            try:
+                                await notifier.send_critical_alert(
+                                    title="SL QUANTITY MISMATCH",
+                                    message=f"Failed to fix SL mismatch: {symbol}",
+                                    details=f"Position: {pos_qty}\nSL: {sl_qty}\nDiff: {diff}\nMANUAL FIX REQUIRED"
+                                )
+                            except Exception as e:
+                                console.print(f"[yellow]⚠ Failed to send alert: {e}[/yellow]")
                 else:
                     # CASE 3: All good
                     table.add_row(
@@ -430,6 +455,19 @@ async def ghost_synchronizer(
     except ExchangeError as e:
         console.print(f"[red]✗ Ghost sync error: {e}[/red]")
         result['errors'] += 1
+        
+        # Send critical alert for ghost sync crash
+        notifier = get_notifier()
+        if notifier and notifier.is_enabled():
+            try:
+                await notifier.send_critical_alert(
+                    title="GHOST SYNC FAILURE",
+                    message="Ghost Synchronizer crashed",
+                    details=f"Error: {str(e)}\nPositions may be unsafe - MANUAL CHECK REQUIRED"
+                )
+            except Exception as notify_error:
+                console.print(f"[yellow]⚠ Failed to send alert: {notify_error}[/yellow]")
+        
         return result
 
 
