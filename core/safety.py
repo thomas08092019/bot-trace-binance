@@ -357,7 +357,7 @@ async def ghost_synchronizer(
         all_synced = True
         
         for position in positions:
-            symbol = position.get('symbol')
+            pos_symbol = position.get('symbol')  # Renamed to avoid shadowing parameter
             pos_qty = get_position_qty(position)
             pos_side = get_position_side(position)
             
@@ -369,7 +369,7 @@ async def ghost_synchronizer(
             if sl_order is None:
                 # CASE 1: Missing stop loss
                 table.add_row(
-                    symbol,
+                    pos_symbol,
                     pos_side,
                     str(pos_qty),
                     "[red]MISSING[/red]",
@@ -382,7 +382,7 @@ async def ghost_synchronizer(
                 else:
                     result['errors'] += 1
                     all_synced = False
-                    console.print(f"[yellow]⚠ SL placement failed for {symbol} - will retry next cycle[/yellow]")
+                    console.print(f"[yellow]⚠ SL placement failed for {pos_symbol} - will retry next cycle[/yellow]")
                     
                     # Send critical alert for naked position
                     notifier = get_notifier()
@@ -390,7 +390,7 @@ async def ghost_synchronizer(
                         try:
                             await notifier.send_critical_alert(
                                 title="NAKED POSITION DETECTED",
-                                message=f"Position without stop loss: {symbol}",
+                                message=f"Position without stop loss: {pos_symbol}",
                                 details=f"Side: {pos_side}\nQty: {pos_qty}\nFailed to place SL - MANUAL INTERVENTION NEEDED"
                             )
                         except Exception as e:
@@ -404,7 +404,7 @@ async def ghost_synchronizer(
                 if is_mismatch:
                     # CASE 2: Quantity mismatch
                     table.add_row(
-                        symbol,
+                        pos_symbol,
                         pos_side,
                         str(pos_qty),
                         f"[yellow]MISMATCH ({sl_qty})[/yellow]",
@@ -426,7 +426,7 @@ async def ghost_synchronizer(
                             try:
                                 await notifier.send_critical_alert(
                                     title="SL QUANTITY MISMATCH",
-                                    message=f"Failed to fix SL mismatch: {symbol}",
+                                    message=f"Failed to fix SL mismatch: {pos_symbol}",
                                     details=f"Position: {pos_qty}\nSL: {sl_qty}\nDiff: {diff}\nMANUAL FIX REQUIRED"
                                 )
                             except Exception as e:
@@ -434,7 +434,7 @@ async def ghost_synchronizer(
                 else:
                     # CASE 3: All good
                     table.add_row(
-                        symbol,
+                        pos_symbol,
                         pos_side,
                         str(pos_qty),
                         "[green]OK[/green]",

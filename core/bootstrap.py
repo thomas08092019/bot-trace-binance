@@ -240,14 +240,6 @@ async def force_margin_config(exchange, symbol: str, leverage: int, margin_mode:
     except Exception as e:
         console.print(f"[red]✗ Error setting margin/leverage: {e}[/red]")
 
-
-# Backward compatibility alias
-async def force_isolated_margin(exchange, symbol: str, leverage: int) -> None:
-    """Deprecated: Use force_margin_config instead."""
-    await force_margin_config(exchange, symbol, leverage, 'isolated')
-        raise BootstrapError(f"Failed to configure margin/leverage: {e}")
-
-
 async def bootstrap_system(exchange, risk_percent: float, leverage: int, symbol: str, margin_mode: str = 'isolated') -> SingleInstanceLock:
     """
     Complete system bootstrap sequence.

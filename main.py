@@ -34,7 +34,7 @@ from core.exchange import create_exchange, SafeExchange, StaleDataError, Exchang
 from core.calculator import calculate_safe_quantity, parse_decimal
 from core.execution import execute_atomic_entry, SpreadTooWideError
 from core.safety import ghost_synchronizer, get_position_summary, display_position_summary
-from core.risk_manager import DynamicRiskManager
+# DynamicRiskManager removed - was initialized but never used
 from core.notifier import Notifier, set_notifier, get_notifier
 from strategy.scanner import scan_market, get_default_symbols, fetch_top_symbols
 from strategy.manager import PositionManager
@@ -77,9 +77,7 @@ def load_config() -> dict:
     Raises:
         ValueError: If required config is missing
     """
-    # Load .env file
-    env_path = Path(__file__).parent / '.env'
-    load_dotenv(env_path)
+    # Note: .env is already loaded at module level (line 26-27)
     
     # Required variables
     api_key = os.getenv('API_KEY')
@@ -120,6 +118,13 @@ async def cleanup():
     global exchange, lock
     
     console.print("\n[cyan]Cleaning up...[/cyan]")
+    
+    # Close database connection
+    try:
+        from core.database import close_db
+        close_db()
+    except Exception as e:
+        console.print(f"[yellow]Database cleanup: {e}[/yellow]")
     
     if exchange:
         try:
@@ -186,24 +191,22 @@ async def trading_loop(
         )
         console.print(f"[green]✓ Trailing Stop enabled: Activation={trailing_activation}%, Callback={trailing_callback}%[/green]")
     
-    # Initialize Dynamic Risk Manager
-    risk_manager = DynamicRiskManager(
-        base_leverage=leverage,
-        min_leverage=int(os.getenv('MIN_LEVERAGE', '3')),
-        max_leverage=int(os.getenv('MAX_LEVERAGE', '20')),
-        enabled=config['enable_dynamic_risk']
-    )
+    # Note: DynamicRiskManager was removed as it was initialized but never used
+    # If dynamic risk management is needed, it should be properly integrated
     
     # Initialize Notification System (Optional)
     global notifier
     notifier = Notifier()
     set_notifier(notifier)
     
-    # Send startup notification
+    # Fetch balance for startup notification
+    balance = None
     if notifier.is_enabled():
         try:
+            balance_info = await exchange.fetch_balance()
+            usdt_balance = balance_info.get('USDT', {}).get('free', 0)
             await notifier.send_startup(
-                balance=float(balance),
+                balance=float(usdt_balance),
                 testnet=config.get('testnet', False)
             )
         except Exception as e:
@@ -211,7 +214,7 @@ async def trading_loop(
     
     iteration = 0
     symbols = []  # Will be fetched dynamically
-    base_symbol_limit = 15  # Default scan size
+    # Note: base_symbol_limit now properly uses config value from line 162
     
     while not shutdown_requested:
         iteration += 1
@@ -465,6 +468,18 @@ async def main():
         console.print(f"[dim]Take Profit: {config['takeprofit_percent']}% {'(enabled)' if config['takeprofit_percent'] > 0 else '(disabled)'}[/dim]")
         console.print(f"[dim]Trailing: Activation={config['trailing_activation_percent']}%, Callback={config['trailing_callback_percent']}% {'(enabled)' if config['trailing_activation_percent'] > 0 else '(disabled)'}[/dim]")
         console.print(f"[dim]Testnet: {config['testnet']}[/dim]")
+        
+        # Initialize Trading Journal Database
+        console.print("\n[bold]Initializing Trading Journal...[/bold]")
+        from core.database import initialize_db
+        from core.reporter import PnLReporter
+        
+        if not initialize_db():
+            console.print("[yellow]⚠ Database initialization failed - continuing without journal[/yellow]")
+        else:
+            # Display startup report
+            reporter = PnLReporter()
+            reporter.print_startup_report()
         
         # Set up signal handlers
         setup_signal_handlers()

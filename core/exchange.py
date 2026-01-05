@@ -325,33 +325,9 @@ class SafeExchange:
         except Exception as e:
             console.print(f"[yellow]⚠ Could not fetch regular orders: {e}[/yellow]")
         
-        # Method 2: Fetch positions to check for conditional orders
-        # On Binance Futures, conditional orders are attached to positions
-        try:
-            positions = await self.fetch_positions(symbol)
-            for pos in positions:
-                pos_symbol = pos.get('symbol')
-                
-                # For each position, check if it has stop loss or take profit attached
-                # Use fapiPrivateV2GetPositionRisk which includes stopPrice and takeProfitPrice
-                try:
-                    if pos_symbol:
-                        # Remove :USDT suffix for Binance API
-                        api_symbol = pos_symbol.replace('/', '').replace(':USDT', '')
-                        
-                        # Fetch position risk info which includes conditional order prices
-                        position_risk = await self._retry_async(
-                            self.exchange.fapiPrivateV2GetPositionRisk,
-                            {'symbol': api_symbol}
-                        )
-                        
-                        # This returns position info including stopPrice fields
-                        # But we still need actual order IDs, so this doesn't help much
-                        pass
-                except:
-                    pass
-        except:
-            pass
+        # Method 2: Removed - was dead code that fetched position risk info
+        # but never used the results (all pass statements).
+        # Binance Futures conditional orders ARE returned by fetch_open_orders().
         
         return all_orders
     

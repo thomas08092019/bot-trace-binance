@@ -104,6 +104,43 @@ class Notifier:
             console.print(f"[yellow]⚠ Failed to initialize notifications: {e}[/yellow]")
             console.print("[dim]  Bot will continue without notifications[/dim]")
     
+    def _prepare_notification(self, title: str, message_type: str):
+        """
+        Prepare notification formatting (DRY helper).
+        
+        Args:
+            title: Notification title
+            message_type: Message type for emoji/color
+            
+        Returns:
+            Tuple of (formatted_title, notify_type)
+        """
+        emoji_map = {
+            'info': 'ℹ️',
+            'success': '✅',
+            'warning': '⚠️',
+            'error': '🚨',
+            'entry': '🚀',
+            'exit': '💰',
+            'stop': '🛑'
+        }
+        
+        notify_type_map = {
+            'info': apprise.NotifyType.INFO,
+            'success': apprise.NotifyType.SUCCESS,
+            'warning': apprise.NotifyType.WARNING,
+            'error': apprise.NotifyType.FAILURE,
+            'entry': apprise.NotifyType.SUCCESS,
+            'exit': apprise.NotifyType.SUCCESS,
+            'stop': apprise.NotifyType.WARNING
+        }
+        
+        emoji = emoji_map.get(message_type, 'ℹ️')
+        formatted_title = f"{emoji} {title}"
+        notify_type = notify_type_map.get(message_type, apprise.NotifyType.INFO)
+        
+        return formatted_title, notify_type
+    
     async def send(
         self,
         title: str,
@@ -126,35 +163,9 @@ class Notifier:
         if not self.enabled or not self.apprise_instance:
             return False
         
-        # Add emoji prefix based on type
-        emoji_map = {
-            'info': 'ℹ️',
-            'success': '✅',
-            'warning': '⚠️',
-            'error': '🚨',
-            'entry': '🚀',
-            'exit': '💰',
-            'stop': '🛑'
-        }
-        
-        emoji = emoji_map.get(message_type, 'ℹ️')
-        formatted_title = f"{emoji} {title}"
-        
-        # Determine apprise notify type
-        notify_type_map = {
-            'info': apprise.NotifyType.INFO,
-            'success': apprise.NotifyType.SUCCESS,
-            'warning': apprise.NotifyType.WARNING,
-            'error': apprise.NotifyType.FAILURE,
-            'entry': apprise.NotifyType.SUCCESS,
-            'exit': apprise.NotifyType.SUCCESS,
-            'stop': apprise.NotifyType.WARNING
-        }
-        
-        notify_type = notify_type_map.get(message_type, apprise.NotifyType.INFO)
+        formatted_title, notify_type = self._prepare_notification(title, message_type)
         
         try:
-            # Send notification asynchronously
             loop = asyncio.get_event_loop()
             success = await loop.run_in_executor(
                 None,
@@ -198,32 +209,7 @@ class Notifier:
         if not self.enabled or not self.apprise_instance:
             return False
         
-        # Add emoji prefix based on type
-        emoji_map = {
-            'info': 'ℹ️',
-            'success': '✅',
-            'warning': '⚠️',
-            'error': '🚨',
-            'entry': '🚀',
-            'exit': '💰',
-            'stop': '🛑'
-        }
-        
-        emoji = emoji_map.get(message_type, 'ℹ️')
-        formatted_title = f"{emoji} {title}"
-        
-        # Determine apprise notify type
-        notify_type_map = {
-            'info': apprise.NotifyType.INFO,
-            'success': apprise.NotifyType.SUCCESS,
-            'warning': apprise.NotifyType.WARNING,
-            'error': apprise.NotifyType.FAILURE,
-            'entry': apprise.NotifyType.SUCCESS,
-            'exit': apprise.NotifyType.SUCCESS,
-            'stop': apprise.NotifyType.WARNING
-        }
-        
-        notify_type = notify_type_map.get(message_type, apprise.NotifyType.INFO)
+        formatted_title, notify_type = self._prepare_notification(title, message_type)
         
         try:
             success = self.apprise_instance.notify(

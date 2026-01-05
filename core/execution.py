@@ -8,6 +8,7 @@ Implements:
 - Stop loss based on ACTUAL executedQty (not requested qty)
 - Emergency market close on failure
 - Optional notifications for trade events
+- Trading journal recording
 """
 
 import os
@@ -28,6 +29,7 @@ from .calculator import (
     validate_min_notional
 )
 from .notifier import get_notifier
+from .database import record_entry, record_exit
 
 console = Console()
 
@@ -344,6 +346,62 @@ async def execute_atomic_entry(
     # ====== STEP 2: MARKET ENTRY ======
     console.print("\n[bold]Step 2/5: Market Entry[/bold]")
     try:
+        # Get symbol info and check max quantity
+        symbol_info = exchange.get_market_info(symbol)
+        
+        # Try to get max quantity from multiple sources
+        max_qty = None
+        
+        # Source 1: CCXT normalized limits
+        max_qty_raw = symbol_info.get('limits', {}).get('amount', {}).get('max')
+        if max_qty_raw is not None:
+            max_qty = parse_decimal(max_qty_raw)
+            console.print(f"[dim]  Max qty from CCXT limits: {max_qty}[/dim]")
+        
+        # Source 2: Raw Binance filters (fallback) - try both possible structures
+        if max_qty is None:
+            # Try info.filters (Binance Futures structure)
+            filters = None
+            if 'info' in symbol_info:
+                info = symbol_info['info']
+                if isinstance(info, dict):
+                    filters = info.get('filters', [])
+            
+            if filters:
+                for f in filters:
+                    filter_type = f.get('filterType', '')
+                    # Check MARKET_LOT_SIZE first (for market orders)
+                    if filter_type == 'MARKET_LOT_SIZE':
+                        max_qty_str = f.get('maxQty')
+                        if max_qty_str:
+                            max_qty = parse_decimal(max_qty_str)
+                            console.print(f"[dim]  Max qty from MARKET_LOT_SIZE: {max_qty}[/dim]")
+                            break
+                    # Fallback to LOT_SIZE
+                    elif filter_type == 'LOT_SIZE' and max_qty is None:
+                        max_qty_str = f.get('maxQty')
+                        if max_qty_str:
+                            max_qty = parse_decimal(max_qty_str)
+                            console.print(f"[dim]  Max qty from LOT_SIZE: {max_qty}[/dim]")
+        
+        # Source 3: If still no max_qty, assume it's a low volume coin and use a safe default
+        # Binance typically limits low-cap coins to 10M-100K range
+        if max_qty is None:
+            # Conservative default - most Binance memecoins have max around 10M-100K
+            max_qty = Decimal("100000")
+            console.print(f"[yellow]⚠ Could not find max qty limit, using safe default: {max_qty}[/yellow]")
+        
+        # Clamp quantity if needed
+        if quantity > max_qty:
+            console.print(f"[yellow]⚠ Quantity {quantity} > max allowed {max_qty}. Clamping to max.[/yellow]")
+            # Floor to step size after clamping
+            step_size = get_step_size(symbol_info, symbol)
+            quantity = floor_to_step(max_qty, step_size)
+            console.print(f"[yellow]  Adjusted quantity: {quantity}[/yellow]")
+        
+        console.print(f"→ Creating market {side} order: {quantity} {symbol}")
+        console.print(f"  Client Order ID: {exchange._generate_client_order_id()}")
+        
         entry_order = await exchange.create_market_order(
             symbol=symbol,
             side=side,
@@ -380,6 +438,20 @@ async def execute_atomic_entry(
         result['success'] = True
         return result
     
+    # Record entry trade in database
+    try:
+        record_entry(
+            symbol=symbol,
+            side='LONG' if is_long else 'SHORT',
+            quantity=executed_qty,
+            price=average_price,
+            leverage=leverage,
+            fee=Decimal('0'),  # Entry fee (if available from order info)
+            order_id=entry_order.get('id')
+        )
+    except Exception as e:
+        console.print(f"[yellow]⚠ Failed to record entry trade: {e}[/yellow]")
+    
     # Send entry notification
     notifier = get_notifier()
     if notifier and notifier.is_enabled():
@@ -393,6 +465,9 @@ async def execute_atomic_entry(
             )
         except Exception as e:
             console.print(f"[yellow]⚠ Failed to send entry notification: {e}[/yellow]")
+    
+    # Store entry price in result for later exit recording
+    result['entry_price'] = average_price
     
     # ====== STEP 4: PLACE STOP LOSS (ATOMIC DEFENSE) ======
     console.print("\n[bold]Step 4/5: Atomic Defense (Stop Loss)[/bold]")

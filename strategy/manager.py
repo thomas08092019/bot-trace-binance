@@ -6,6 +6,7 @@ Implements:
 - Take profit timeout (force close if TP reached but not filled)
 - Safe stop loss movement (always uses Ghost Synchronizer pattern)
 - Highest price tracking per position
+- Trading journal recording for exits
 - CRITICAL: All operations use SafeExchange wrapper
 """
 
@@ -21,6 +22,7 @@ from rich.table import Table
 
 from core.exchange import SafeExchange, ExchangeError
 from core.calculator import parse_decimal, get_tick_size, floor_price_to_tick
+from core.database import record_exit
 from core.safety import (
     get_position_side,
     get_position_qty,
@@ -380,6 +382,22 @@ class PositionManager:
                         amount=pos_qty
                     )
                     console.print(f"[green]✓ Position force closed at market price: {order['id']}[/green]")
+                    
+                    # Record exit trade in database
+                    try:
+                        record_exit(
+                            symbol=symbol,
+                            side='LONG' if is_long else 'SHORT',
+                            trade_type='TP_TIMEOUT',
+                            quantity=pos_qty,
+                            exit_price=current_price,
+                            entry_price=tracker.entry_price,
+                            leverage=1,  # Would need to track this in tracker
+                            fee=Decimal('0'),  # Fee info not available here
+                            order_id=order.get('id')
+                        )
+                    except Exception as e:
+                        console.print(f"[yellow]⚠ Failed to record exit trade: {e}[/yellow]")
                     
                     # Cancel TP order to avoid duplicate fills
                     try:
